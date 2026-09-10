@@ -326,13 +326,27 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   // Mirrors profile information into the deployment-wide user directory when it
   // differs from what was last written.
-  async #syncDirectory(): Promise<void> {
-    const profile = this.storage.profile.get();
-    if (profile.name === this.storage.directoryName.get()) return;
+  //
+  // The `syncUser` await opens this DO's input gate, so a profile update can land while a sync is
+  // in flight. One sync runs at a time and re-checks the profile after each write, so it only
+  // settles once the directory matches the current profile; concurrent callers join it, and the
+  // marker never records a name the directory didn't receive last.
+  #directorySync: Promise<void> | undefined;
+
+  #syncDirectory(): Promise<void> {
+    return this.#directorySync ??= this.#runDirectorySync()
+        .finally(() => { this.#directorySync = undefined; });
+  }
+
+  async #runDirectorySync(): Promise<void> {
     try {
-      await this.ctx.exports.UserDirectoryDurableObject.getByName("")
-          .syncUser({ id: profile.id, name: profile.name });
-      this.storage.directoryName.put(profile.name);
+      for (;;) {
+        const profile = this.storage.profile.get();
+        if (profile.name === this.storage.directoryName.get()) return;
+        await this.ctx.exports.UserDirectoryDurableObject.getByName("")
+            .syncUser({ id: profile.id, name: profile.name });
+        this.storage.directoryName.put(profile.name);
+      }
     } catch (error) {
       logger.warn("failed to sync user directory record", {
         event: "user.directory.sync.failed",
