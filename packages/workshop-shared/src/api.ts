@@ -388,10 +388,11 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Find other users of this deployment by a case-insensitive substring of
-   * their display name or id, for inviting collaborators. Excludes the caller.
-   * Returns at most 10 records, earliest substring match first.
+   * their display name or id, for inviting collaborators. Excludes the caller
+   * and every user named by `excludeIds`. Returns at most 10 records, earliest
+   * substring match first.
    */
-  searchUsers(query: string): Promise<UserDirectoryRecord[]>;
+  searchUsers(query: string, excludeIds: string[]): Promise<UserDirectoryRecord[]>;
 
   /**
    * Change the user's password, if using password-based authentication.

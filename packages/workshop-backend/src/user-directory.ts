@@ -27,19 +27,19 @@ export class UserDirectoryDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Case-insensitive substring search over name and id, excluding `excludeId`
-   * (the caller). Earliest match first, so a name that starts with the query
+   * Case-insensitive substring search over name and id, excluding every id in
+   * `excludeIds`. Earliest match first, so a name that starts with the query
    * outranks one that merely contains it; ties by name then id.
    */
-  searchUsers(query: string, excludeId: string): UserDirectoryRecord[] {
+  searchUsers(query: string, excludeIds: string[]): UserDirectoryRecord[] {
     const needle = query.trim().toLowerCase();
     if (needle === "") return [];
     return this.ctx.storage.sql.exec<UserDirectoryRecord>(
       `SELECT id, name FROM users
-       WHERE id <> ? AND instr(search_text, ?) > 0
+       WHERE id NOT IN (SELECT value FROM json_each(?)) AND instr(search_text, ?) > 0
        ORDER BY instr(search_text, ?), name COLLATE NOCASE, id
        LIMIT ${SEARCH_RESULT_LIMIT}`,
-      excludeId, needle, needle,
+      JSON.stringify(excludeIds), needle, needle,
     ).toArray();
   }
 }

@@ -35,17 +35,18 @@ describe("authenticated user directory RPC", () => {
     using viewerApi = await publicApi.authenticate(viewer.token);
 
     // createAccount alone does not index: the directory is written where a session is minted.
-    await expect(viewerApi.searchUsers("target bef")).resolves.toEqual([]);
+    await expect(viewerApi.searchUsers("target bef", [])).resolves.toEqual([]);
     using targetApi = await publicApi.authenticate(target.token);
-    await expect(viewerApi.searchUsers("target bef")).resolves.toEqual([
+    await expect(viewerApi.searchUsers("target bef", [])).resolves.toEqual([
       { id: target.username, name: "Directory Target Before" },
     ]);
-    // The caller is excluded from its own results.
-    await expect(viewerApi.searchUsers("directory viewer")).resolves.toEqual([]);
+    // The authenticated caller is always excluded, and callers can exclude more users.
+    await expect(viewerApi.searchUsers("directory viewer", [])).resolves.toEqual([]);
+    await expect(viewerApi.searchUsers("target bef", [target.username])).resolves.toEqual([]);
 
     await targetApi.setOwnDisplayName("Directory Target After");
-    await expect(viewerApi.searchUsers("target bef")).resolves.toEqual([]);
-    await expect(viewerApi.searchUsers("target aft")).resolves.toEqual([
+    await expect(viewerApi.searchUsers("target bef", [])).resolves.toEqual([]);
+    await expect(viewerApi.searchUsers("target aft", [])).resolves.toEqual([
       { id: target.username, name: "Directory Target After" },
     ]);
   });

@@ -127,9 +127,9 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   setOwnDisplayName(name: string): Promise<void> {
     return this.#user.setOwnDisplayName(name);
   }
-  searchUsers(query: string): Promise<UserDirectoryRecord[]> {
+  searchUsers(query: string, excludeIds: string[]): Promise<UserDirectoryRecord[]> {
     return retryOnDoReset(() => this.ctx.exports.UserDirectoryDurableObject.getByName("")
-        .searchUsers(query, this.#userId.name!));
+        .searchUsers(query, [this.#userId.name!, ...excludeIds]));
   }
   changePassword(oldHash: Uint8Array, newHash: Uint8Array): Promise<void> {
     return this.#user.changePassword(oldHash, newHash);

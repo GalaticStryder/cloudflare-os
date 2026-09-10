@@ -112,6 +112,7 @@ type OverseerOverrides = {
   requirements?: Partial<Record<CollaboratorRole, ObserverBindingNeed[]>>
   listObserverRequirements?: (role: CollaboratorRole) => Promise<ObserverBindingNeed[]>
   shareLinks?: ShareLinkInfo[]
+  collaborators?: CollaboratorInfo[]
   updateShareLink?: (linkId: string, note?: string) => Promise<void>
   addCollaborator?: (
     userId: string,
@@ -123,7 +124,7 @@ type OverseerOverrides = {
 function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
   const requirements = overrides.requirements ?? { use: [], build: [] }
   return {
-    listCollaborators: async () => [],
+    listCollaborators: async () => overrides.collaborators ?? [],
     listShareLinks: async () => overrides.shareLinks ?? [],
     listObserverRequirements:
       overrides.listObserverRequirements ??
@@ -139,12 +140,12 @@ function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
 }
 
 type AuthenticatedApiOverrides = {
-  searchUsers?: (query: string) => Promise<UserDirectoryRecord[]>
+  searchUsers?: (query: string, excludeIds: string[]) => Promise<UserDirectoryRecord[]>
 }
 
 function fakeAuthenticatedApi(overrides: AuthenticatedApiOverrides = {}): RpcStub<AuthenticatedApi> {
   return {
-    searchUsers: async (query: string) => query ? [{
+    searchUsers: async (query: string, _excludeIds: string[]) => query ? [{
       id: `${query}@example.com`,
       name: query === 'ada' ? 'Ada' : query,
     }] : [],
@@ -255,7 +256,7 @@ describe('ShareModal', () => {
     expect(rendered.textContent).toContain('Link copied')
   })
 
-  it('submits the selected directory result id', async () => {
+  it('excludes existing people and submits the selected directory result id', async () => {
     const addCollaborator = vi.fn<(
       userId: string,
       role: CollaboratorRole,
@@ -265,16 +266,27 @@ describe('ShareModal', () => {
       role,
       addedBy: [],
     }))
-    const searchUsers = vi.fn<(query: string) => Promise<UserDirectoryRecord[]>>(async () => [
+    const existingCollaborator: CollaboratorInfo = {
+      profile: { type: 'user', id: 'maximo@cloudflare.com', name: 'maximo' },
+      role: 'use',
+      addedBy: [],
+    }
+    const searchUsers = vi.fn<(
+      query: string,
+      excludeIds: string[],
+    ) => Promise<UserDirectoryRecord[]>>(async () => [
       { id: 'ada@cloudflare.com', name: 'Ada Lovelace' },
     ])
     const rendered = await render(
-      fakeOverseer({ addCollaborator }),
+      fakeOverseer({ addCollaborator, collaborators: [existingCollaborator] }),
       fakeAuthenticatedApi({ searchUsers }),
     )
 
     await typeDirectorySearch(rendered, 'love')
-    expect(searchUsers).toHaveBeenCalledWith('love')
+    expect(searchUsers).toHaveBeenCalledWith('love', [
+      'dan@cloudflare.com',
+      'maximo@cloudflare.com',
+    ])
     expect(rendered.textContent).toContain('Ada Lovelace')
     expect(rendered.textContent).toContain('ada@cloudflare.com')
 
@@ -342,7 +354,10 @@ describe('ShareModal', () => {
   it('ignores stale searches and selects the highlighted result with Enter', async () => {
     const first = deferred<UserDirectoryRecord[]>()
     const second = deferred<UserDirectoryRecord[]>()
-    const searchUsers = vi.fn<(query: string) => Promise<UserDirectoryRecord[]>>(
+    const searchUsers = vi.fn<(
+      query: string,
+      excludeIds: string[],
+    ) => Promise<UserDirectoryRecord[]>>(
       query => query === 'ada' ? first.promise : second.promise,
     )
     const rendered = await render(

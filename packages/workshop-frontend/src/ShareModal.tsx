@@ -312,6 +312,10 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const [activeDirectoryIndex, setActiveDirectoryIndex] = useState(0)
   const directoryListboxId = useId()
   const directoryQuery = addUsername.trim()
+  const directoryExcludeIds = useMemo(() => [
+    ...(currentUser ? [currentUser.id] : []),
+    ...collaborators.map(({ profile }) => profile.id),
+  ], [collaborators, currentUser])
   const directoryOpen = selectedUser === null && directoryQuery !== ''
   const canInviteUser = selectedUser !== null || (
     directory.status === 'ready' &&
@@ -388,7 +392,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     setActiveDirectoryIndex(0)
     // Debounced: every keystroke from every user would otherwise hit the one directory DO.
     const timer = window.setTimeout(() => {
-      authenticatedApi.searchUsers(directoryQuery).then(
+      authenticatedApi.searchUsers(directoryQuery, directoryExcludeIds).then(
         results => {
           if (!cancelled) setDirectory({ status: 'ready', query: directoryQuery, results })
         },
@@ -402,7 +406,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [authenticatedApi, directoryOpen, directoryQuery, open])
+  }, [authenticatedApi, directoryExcludeIds, directoryOpen, directoryQuery, open])
 
   useEffect(() => {
     const element = document.createElement('div')
