@@ -598,13 +598,15 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   }
 
   const handleDirectoryKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (isImeComposing(event) || selectedUser !== null) return
+    if (isImeComposing(event)) return
     if (event.key === 'Enter') {
       event.preventDefault()
-      const user = directory.results[activeDirectoryIndex]
+      const user = selectedUser === null ? directory.results[activeDirectoryIndex] : undefined
       if (user) selectDirectoryUser(user)
+      else void handleAddCollaborator()
       return
     }
+    if (selectedUser !== null) return
     if (directory.results.length > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault()
       const direction = event.key === 'ArrowDown' ? 1 : -1
@@ -614,14 +616,15 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   }
 
   const handleAddCollaborator = async () => {
-    if (!selectedUser || sharingProhibited || addingRef.current) return
+    const userId = selectedUser?.id ?? addUsername.trim()
+    if (!userId || sharingProhibited || addingRef.current) return
 
     addingRef.current = true
     setAdding(true)
     try {
-      const result = await overseer.addCollaborator(selectedUser.id, addRole, undefined)
+      const result = await overseer.addCollaborator(userId, addRole, undefined)
       if (result === null) {
-        toasts.add({ title: 'That account is no longer available.', variant: 'error' })
+        toasts.add({ title: 'No account found for that username or email.', variant: 'error' })
       } else {
         const landedId = result.profile.id
         setAddUsername('')
@@ -948,7 +951,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
               tone="primary"
               className="col-span-3 w-full !rounded-xl sm:col-span-1 sm:w-auto sm:min-w-[68px]"
               onClick={handleAddCollaborator}
-              disabled={!selectedUser || adding || sharingProhibited}
+              disabled={!addUsername.trim() || adding || sharingProhibited}
             >
               {adding ? 'Inviting…' : 'Invite'}
             </WorkshopButton>

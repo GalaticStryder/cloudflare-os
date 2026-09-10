@@ -85,7 +85,7 @@ import ShareModal from './ShareModal'
 const METADATA = { id: 'trip-planner', title: 'Trip planner' } as GadgetMetadata
 const WORKSPACE_URL = `${window.location.origin}/workspace/trip-planner`
 
-const CURRENT_USER: AiChatAuthorInfo = { id: 'dan@cloudflare.com', name: 'Dan' }
+const CURRENT_USER: AiChatAuthorInfo = { type: 'user', id: 'dan@cloudflare.com', name: 'Dan' }
 
 const DOC_REQUIREMENT: ObserverBindingNeed = {
   gatekeeperId: 7,
@@ -284,6 +284,31 @@ describe('ShareModal', () => {
     await click(button(rendered, 'Invite'))
 
     expect(addCollaborator).toHaveBeenCalledWith('ada@cloudflare.com', 'use', undefined)
+  })
+
+  it('submits a typed exact id when the directory has not indexed the account', async () => {
+    const addCollaborator = vi.fn<(
+      userId: string,
+      role: CollaboratorRole,
+      note?: string,
+    ) => Promise<CollaboratorInfo | null>>(async (userId, role) => ({
+      profile: { type: 'user' as const, id: userId, name: 'Dormant User' },
+      role,
+      addedBy: [],
+    }))
+    const rendered = await render(
+      fakeOverseer({ addCollaborator }),
+      fakeAuthenticatedApi({ searchUsers: async () => [] }),
+    )
+
+    await typeDirectorySearch(rendered, 'dormant@example.com')
+    expect(rendered.textContent).toContain('No users found.')
+    const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
+    await act(async () => input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    ))
+
+    expect(addCollaborator).toHaveBeenCalledWith('dormant@example.com', 'use', undefined)
   })
 
   it('ignores stale searches and selects the highlighted result with Enter', async () => {
