@@ -311,6 +311,34 @@ describe('ShareModal', () => {
     expect(addCollaborator).toHaveBeenCalledWith('dormant@example.com', 'use', undefined)
   })
 
+  it('does not submit a raw query while search is pending or has visible matches', async () => {
+    const pending = deferred<UserDirectoryRecord[]>()
+    const addCollaborator = vi.fn()
+    const rendered = await render(
+      fakeOverseer({ addCollaborator }),
+      fakeAuthenticatedApi({ searchUsers: async () => pending.promise }),
+    )
+
+    await typeDirectorySearch(rendered, 'alex')
+    const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
+    expect(button(rendered, 'Invite').disabled).toBe(true)
+    await act(async () => input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    ))
+    expect(addCollaborator).not.toHaveBeenCalled()
+
+    await act(async () => {
+      pending.resolve([{ id: 'alex.smith@example.com', name: 'Alex Smith' }])
+      await Promise.resolve()
+    })
+    expect(button(rendered, 'Invite').disabled).toBe(true)
+    await act(async () => input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    ))
+    expect(input.value).toBe('Alex Smith')
+    expect(addCollaborator).not.toHaveBeenCalled()
+  })
+
   it('ignores stale searches and selects the highlighted result with Enter', async () => {
     const first = deferred<UserDirectoryRecord[]>()
     const second = deferred<UserDirectoryRecord[]>()

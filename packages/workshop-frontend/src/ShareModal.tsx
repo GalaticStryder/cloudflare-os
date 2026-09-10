@@ -24,8 +24,12 @@ type CollaboratorRow =
   | { kind: 'owner'; profile: AiChatAuthorInfo }
   | { kind: 'collaborator'; info: CollaboratorInfo }
 
-type DirectorySearch = { status: 'loading' | 'failed' | 'ready'; results: UserDirectoryRecord[] }
-const NO_DIRECTORY_SEARCH: DirectorySearch = { status: 'ready', results: [] }
+type DirectorySearch = {
+  status: 'loading' | 'failed' | 'ready'
+  query: string
+  results: UserDirectoryRecord[]
+}
+const NO_DIRECTORY_SEARCH: DirectorySearch = { status: 'ready', query: '', results: [] }
 
 type ConfirmationTarget =
   | { kind: 'remove'; profileId: string; dependents: AffectedCollaborator[]; previewing: boolean; keepSet: Set<string> }
@@ -309,6 +313,11 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const directoryListboxId = useId()
   const directoryQuery = addUsername.trim()
   const directoryOpen = selectedUser === null && directoryQuery !== ''
+  const canInviteUser = selectedUser !== null || (
+    directory.status === 'ready' &&
+    directory.query === directoryQuery &&
+    directory.results.length === 0
+  )
   const [addRole, setAddRole] = useState<CollaboratorRole>('use')
   const [adding, setAdding] = useState(false)
   const [newLinkRole, setNewLinkRole] = useState<CollaboratorRole>('use')
@@ -375,16 +384,18 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       return
     }
     let cancelled = false
-    setDirectory({ status: 'loading', results: [] })
+    setDirectory({ status: 'loading', query: directoryQuery, results: [] })
     setActiveDirectoryIndex(0)
     // Debounced: every keystroke from every user would otherwise hit the one directory DO.
     const timer = window.setTimeout(() => {
       authenticatedApi.searchUsers(directoryQuery).then(
-        results => { if (!cancelled) setDirectory({ status: 'ready', results }) },
+        results => {
+          if (!cancelled) setDirectory({ status: 'ready', query: directoryQuery, results })
+        },
         error => {
           if (cancelled) return
           console.error('Failed to search user directory:', error)
-          setDirectory({ status: 'failed', results: [] })
+          setDirectory({ status: 'failed', query: directoryQuery, results: [] })
         })
     }, 200)
     return () => {
@@ -616,7 +627,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   }
 
   const handleAddCollaborator = async () => {
-    const userId = selectedUser?.id ?? addUsername.trim()
+    const userId = selectedUser?.id ?? (canInviteUser ? directoryQuery : '')
     if (!userId || sharingProhibited || addingRef.current) return
 
     addingRef.current = true
@@ -951,7 +962,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
               tone="primary"
               className="col-span-3 w-full !rounded-xl sm:col-span-1 sm:w-auto sm:min-w-[68px]"
               onClick={handleAddCollaborator}
-              disabled={!addUsername.trim() || adding || sharingProhibited}
+              disabled={!canInviteUser || adding || sharingProhibited}
             >
               {adding ? 'Inviting…' : 'Invite'}
             </WorkshopButton>
