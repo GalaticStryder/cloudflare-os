@@ -1,4 +1,5 @@
 import { logRpcFailure } from '../rpcErrors'
+import { openGatekeeperPopup } from '../openGatekeeperPopup'
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useMemo, useState } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
@@ -577,7 +578,7 @@ function ConnectorsPage() {
         refreshGatekeeperApps(authenticatedApi)
       } else {
         const { url } = await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns)
-        window.open(url, '_blank', 'noopener,noreferrer')
+        openGatekeeperPopup(url)
       }
       handleCloseModal()
     } catch (err) {
@@ -597,7 +598,7 @@ function ConnectorsPage() {
         resourceUrlPatterns,
       )
       if (result.url) {
-        window.open(result.url, '_blank', 'noopener,noreferrer')
+        openGatekeeperPopup(result.url)
       }
       // On success the new grant arrives via subscribeConnectedAccounts(); the toggle reflects it
       // once `grantedResourceUrlPatterns` updates.
@@ -634,8 +635,7 @@ function ConnectorsPage() {
     setReconnectingAccountId(accountId)
     try {
       const { url } = await authenticatedApi.reconnectAccount(accountId)
-      window.open(url, '_blank', 'noopener,noreferrer')
-    } catch (err) {
+      openGatekeeperPopup(url)    } catch (err) {
       console.error('Failed to reconnect account:', err)
       toasts.add({ title: 'Failed to reconnect account', variant: 'error' })
     } finally {

@@ -1,4 +1,5 @@
 import { logRpcFailure } from './rpcErrors'
+import { openGatekeeperPopup } from './openGatekeeperPopup'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import { useAuthenticatedApi } from './AuthContext'
@@ -252,8 +253,7 @@ export default function OnboardingWizard({
     setConnectingVendorId(vendorId)
     try {
       const { url } = await authenticatedApi.connectAccount(vendorId)
-      window.open(url, '_blank', 'noopener,noreferrer')
-    } catch (err) {
+      openGatekeeperPopup(url)    } catch (err) {
       console.error('Failed to start connection:', err)
       toasts.add({ title: 'Failed to start connection', variant: 'error' })
     } finally {

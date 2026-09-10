@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { openGatekeeperPopup } from './openGatekeeperPopup'
 import { Dialog, Select, Loader, Text, useKumoToastManager } from '@cloudflare/kumo'
 import { Warning, Plus, ArrowClockwise, CheckCircle } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
@@ -215,9 +216,8 @@ export default function ObserverConfigModal({
           vendorId,
           required.length > 0 ? required : undefined,
         )
-        window.open(url, '_blank', 'noopener,noreferrer')
-      }
-    } catch (err) {
+        openGatekeeperPopup(url)
+      }    } catch (err) {
       console.error('Failed to initiate connection:', err)
       toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
       connectingRef.current = null
@@ -229,7 +229,7 @@ export default function ObserverConfigModal({
     setReconnecting(accountId)
     try {
       const { url } = await authenticatedApi.reconnectAccount(accountId)
-      window.open(url, '_blank', 'noopener,noreferrer')
+      openGatekeeperPopup(url)
       // Subscription fires add() with credentialsValid:true on completion, clearing `reconnecting`.
     } catch (err) {
       console.error('Failed to initiate reconnection:', err)
@@ -249,7 +249,7 @@ export default function ObserverConfigModal({
     setGranting(account.id)
     try {
       const { url } = await authenticatedApi.ensureAccountResources(account.id, missing)
-      if (url) window.open(url, '_blank', 'noopener,noreferrer')
+      if (url) openGatekeeperPopup(url)
       else {
         // The gatekeeper confirmed this account already has access. Update the modal so the user can
         // continue without an OAuth flow.

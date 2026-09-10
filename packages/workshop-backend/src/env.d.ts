@@ -65,6 +65,7 @@ declare global {
       // "google,github,cloudflare"). A listed gatekeeper must also advertise providesAuth. Empty =
       // no gatekeeper sign-in (password / CF Access only).
       AUTH_GATEKEEPERS?: string;
+      AUTH_SESSION_MAX_AGE_SECONDS?: string;
 
       // Set to "true" to disable username/password login + signup (gatekeeper sign-in only). Only
       // takes effect when at least one auth gatekeeper is allowlisted (otherwise password auth stays

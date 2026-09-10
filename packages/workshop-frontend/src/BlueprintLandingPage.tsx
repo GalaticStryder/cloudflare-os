@@ -1,4 +1,5 @@
 import { logRpcFailure } from './rpcErrors'
+import { openGatekeeperPopup } from './openGatekeeperPopup'
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react'
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
 import { RpcStub } from 'capnweb'
@@ -193,9 +194,8 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     setConnectingVendor(vendorId)
     try {
       const result = await authenticatedApi.connectAccount(vendorId)
-      window.open(result.url, '_blank', 'noopener,noreferrer')
-      toasts.add({ title: 'Complete the account connection in the new tab.', variant: 'success' })
-    } catch (err) {
+      openGatekeeperPopup(result.url)
+      toasts.add({ title: 'Complete the account connection in the new tab.', variant: 'success' })    } catch (err) {
       console.error('Failed to initiate connection:', err)
       toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
     } finally {
@@ -208,9 +208,8 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     setReconnectingAccountId(accountId)
     try {
       const result = await authenticatedApi.reconnectAccount(accountId)
-      window.open(result.url, '_blank', 'noopener,noreferrer')
-      toasts.add({ title: 'Complete the account reconnect in the new tab.', variant: 'success' })
-    } catch (err) {
+      openGatekeeperPopup(result.url)
+      toasts.add({ title: 'Complete the account reconnect in the new tab.', variant: 'success' })    } catch (err) {
       console.error('Failed to initiate reconnect:', err)
       toasts.add({ title: 'Failed to start reconnect flow', variant: 'error' })
       setReconnectingAccountId(null)

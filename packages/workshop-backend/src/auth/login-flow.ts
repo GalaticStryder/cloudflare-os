@@ -112,7 +112,7 @@ export class LoginConnectCallbackImpl
       // Closed signups block first-time account creation here too (not just password signup); an
       // existing user signing in is unaffected.
       const signupsEnabled = (await readAdminConfig(this.env)).signupsEnabled;
-      const secret = await userStub.loginOrCreateViaGatekeeper(email, signupsEnabled);
+      const secret = await userStub.loginOrCreateViaGatekeeper(email, signupsEnabled, expiresAt);
       if (secret === null) {
         loginLogger.info("gatekeeper login finished", {
           event: "gatekeeper.login.finished", outcome: "signups_disabled",

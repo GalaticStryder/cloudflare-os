@@ -1,4 +1,4 @@
-import { RpcStub, RpcTarget, newHttpBatchRpcResponse, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
+import { RpcStub, RpcTarget, RpcSession, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
 import { PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, AiGatewayInfo, AiModelProvider, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError } from '@gadgets/workshop-shared/api';
@@ -6,6 +6,7 @@ import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
 import { getServerConfig } from "./deployment-config.js";
 import { isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
 import { getAuthVendorBinding } from "./auth/auth-vendors.js";
+import { SessionLeases } from "./auth/session-leases.js";
 import { getUsageInfo } from "./ai-gateway-billing/limits/usage-checker.js";
 import { listConnectedAccounts, selectAccount } from "./ai-gateway-billing/cloudflare/connection-service.js";
 import { PendingLogin, LoginConnectCallbackImpl } from "./auth/login-flow.js";
@@ -637,6 +638,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 
   constructor(private ctx: ExecutionContext, private env: Env,
       private abortSession: (reason: Error) => void,
+      private leases: SessionLeases,
       private accessPayload?: JWTPayload) {
     super();
     this.users = this.ctx.exports.UserDurableObject;
@@ -674,14 +676,29 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     return { url, attempt: new LoginAttemptImpl(pending) };
   }
 
-  async authenticate(token: string): Promise<AuthenticatedApi> {
-    let split = token.split(':');
-    if (split.length !== 2) {
+  #parseSessionToken(token: string): { userId: DurableObjectId; secret: string } {
+    const split = token.split(':');
+    if (split.length !== 2 || !split[0] || !split[1]) {
       throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
     }
+    return { userId: this.users.idFromName(split[0]), secret: split[1] };
+  }
 
-    let userId = this.users.idFromName(split[0]);
-    await this.users.get(userId).authenticate(split[1]);
+  #trackSession(userId: DurableObjectId, tokenId: string, expiresAt: Date, checkedAt: number): void {
+    this.leases.add(`${userId.toString()}:${tokenId}`, expiresAt,
+      () => this.users.get(userId).getSessionExpiry(tokenId), checkedAt);
+  }
+
+  async logout(token: string): Promise<void> {
+    const { userId, secret } = this.#parseSessionToken(token);
+    await this.users.get(userId).logout(secret);
+  }
+
+  async authenticate(token: string): Promise<AuthenticatedApi> {
+    const { userId, secret } = this.#parseSessionToken(token);
+    const checkedAt = Date.now();
+    const { tokenId, expiresAt } = await this.users.get(userId).authenticate(secret);
+    this.#trackSession(userId, tokenId, expiresAt, checkedAt);
     recordAnalytics(this.ctx, this.env, {
       event_name: "user_authenticated",
       user_id: userId.toString(),
@@ -860,9 +877,10 @@ export default {
         abortController.abort(reason);
       };
 
+      const leases = new SessionLeases(abortSession);
       return await newWorkersRpcResponse(req,
-          new PublicApiImpl(ctx, env, abortSession, accessPayload),
-          { abortSignal: abortController.signal });
+          new PublicApiImpl(ctx, env, abortSession, leases, accessPayload),
+          { abortSignal: abortController.signal, onDispose: () => leases[Symbol.dispose]() });
     }
 
     return new Response("Not Found", {status: 404});
@@ -875,8 +893,9 @@ export default {
 //   long: ctx.abort() will soon be available non-experimentally, in which case we can just use
 //   that instead.
 type ExtendedRpcSessionOptions = RpcSessionOptions & {
-  // Abort WebSocket sessions when this AbortSignal is aborted. (No effect on HTTP batch sessions.)
+  // Abort WebSocket sessions when this AbortSignal is aborted. (Also applies to HTTP batch sessions.)
   abortSignal: AbortSignal;
+  onDispose: () => void;
 };
 
 // Clone of newWorkersRpcResponse() from Cap'n Web, except the `options` has been extended with
@@ -884,7 +903,7 @@ type ExtendedRpcSessionOptions = RpcSessionOptions & {
 async function newWorkersRpcResponse(
     request: Request, localMain: any, options?: ExtendedRpcSessionOptions) {
   if (request.method === "POST") {
-    let response = await newHttpBatchRpcResponse(request, localMain, options);
+    let response = await newAbortableHttpBatchRpcResponse(request, localMain, options);
     // Since we're exposing the same API over WebSocket, too, and WebSocket always allows
     // cross-origin requests, the API necessarily must be safe for cross-origin use (e.g. because
     // it uses in-band authorization, as recommended in the readme). So, we might as well allow
@@ -895,6 +914,37 @@ async function newWorkersRpcResponse(
     return newWorkersWebSocketRpcResponse(request, localMain, options);
   } else {
     return new Response("This endpoint only accepts POST or WebSocket requests.", { status: 400 });
+  }
+}
+
+async function newAbortableHttpBatchRpcResponse(
+    request: Request, localMain: unknown, options?: ExtendedRpcSessionOptions): Promise<Response> {
+  const body = await request.text();
+  const messages = body === "" ? [] : body.split("\n");
+  const responses: string[] = [];
+  const received = Promise.withResolvers<void>();
+  const session = new RpcSession({
+    send(message: string) { responses.push(message); },
+    async receive(): Promise<string> {
+      const message = messages.shift();
+      if (message !== undefined) return message;
+      received.resolve();
+      return new Promise(() => {});
+    },
+    abort(reason: unknown) { received.reject(reason); },
+  }, localMain, options);
+  const stub = session.getRemoteMain();
+  const abort = () => stub[Symbol.dispose]();
+  options?.abortSignal.addEventListener("abort", abort, { once: true });
+  try {
+    if (options?.abortSignal.aborted) abort();
+    await received.promise;
+    await session.drain();
+    return new Response(responses.join("\n"));
+  } finally {
+    options?.abortSignal.removeEventListener("abort", abort);
+    stub[Symbol.dispose]();
+    options?.onDispose();
   }
 }
 
@@ -911,12 +961,15 @@ function newWorkersWebSocketRpcResponse(
 
   // -- ADDED FOR GADGETS --
   if (options?.abortSignal) {
+    const abort = () => stub[Symbol.dispose]();
+    stub.onRpcBroken(() => {
+      options.abortSignal.removeEventListener("abort", abort);
+      options.onDispose();
+    });
     if (options.abortSignal.aborted) {
-      stub[Symbol.dispose]();
+      abort();
     } else {
-      options.abortSignal.addEventListener("abort", () => {
-        stub[Symbol.dispose]();
-      });
+      options.abortSignal.addEventListener("abort", abort, { once: true });
     }
   }
   // -- END ADDED FOR GADGETS --

@@ -1,4 +1,4 @@
-import { AiChatAuthorInfo, AiModelConfig, SUGGESTED_MODELS } from "@gadgets/workshop-shared/api";
+import { AiChatAuthorInfo, AiModelConfig, MODEL_ALIASES, SUGGESTED_MODELS } from "@gadgets/workshop-shared/api";
 import { UserAiModelRecord } from "./user.js";
 
 // The model used for quick tasks like title generation when AI Gateway mode is active.
@@ -114,13 +114,16 @@ export class AiGatewayConfig {
    * SUGGESTED_MODEL for an enabled gateway provider, or undefined otherwise.
    */
   resolveModel(modelId: string): UserAiModelRecord | undefined {
+    // Apply model aliases so stale saved configs (custom models, preferred model, chat threads)
+    // resolve to their current replacements.
+    const resolvedId = MODEL_ALIASES[modelId] ?? modelId;
     for (let [provider, models] of Object.entries(SUGGESTED_MODELS)) {
-      if (this.providers.has(provider) && modelId in models) {
+      if (this.providers.has(provider) && resolvedId in models) {
         return {
-          profile: { type: "agent", id: modelId, name: models[modelId].name },
+          profile: { type: "agent", id: resolvedId, name: models[resolvedId].name },
           config: {
             provider: provider as AiModelConfig["provider"],
-            model: modelId,
+            model: resolvedId,
             // apiToken and apiUrl are ignored when AI Gateway mode is active -- getModel()
             // reads the real values from env. We set them to empty strings here to satisfy
             // the type.
