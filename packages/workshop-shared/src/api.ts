@@ -38,9 +38,9 @@ export const SERVICE_SALT = new Uint8Array([
  */
 export interface LoginAttempt extends RpcTarget {
   /**
-   * Redeem the handoff ticket the sign-in popup posted to this window (the `ticket` of a
-   * `CONNECT_HANDOFF_MESSAGE_TYPE` message, exactly as for `AuthenticatedApi.completeConnectHandoff`)
-   * for a session token (to store and pass to `authenticate()`, same format as `login()`). Resolves
+   * Redeem the handoff ticket the sign-in popup broadcast to this window (the `ticket` of a
+   * `CONNECT_HANDOFF_MESSAGE_TYPE` envelope on the same-origin channel of that name, exactly as for
+   * `AuthenticatedApi.completeConnectHandoff`) for a session token (to store and pass to `authenticate()`, same format as `login()`). Resolves
    * null when the ticket belongs to a different attempt (a broadcast can carry another window's),
    * including one that arrives before this attempt has finished; in either case the attempt is
    * untouched and the caller keeps listening. Rejects if the gatekeeper
@@ -64,9 +64,9 @@ export interface PublicApi extends RpcTarget {
 
   /**
    * Begin a sign-in via an authentication gatekeeper (e.g. "google", "github", "cloudflare").
-   * Returns a `url` the client opens as a popup with the opener retained (unlike
-   * `AuthenticatedApi.connectAccount`, whose popup is disowned) and an `attempt` stub whose `claim()`
-   * exchanges the ticket the popup posts back for the session token. The vendor must be
+   * Returns a `url` the client opens as a disowned popup (as for `AuthenticatedApi.connectAccount`;
+   * no page in the flow holds a handle to the login window) and an `attempt` stub whose `claim()`
+   * exchanges the ticket the popup broadcasts back for the session token. The vendor must be
    * auth-capable and allowlisted (see ServerConfig.authVendors); throws otherwise.
    *
    * Dispose `attempt` to abandon the sign-in (e.g. the user closed the popup). Nothing is cancelled
@@ -551,8 +551,8 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Redeem the handoff ticket a connect popup delivered to this window (the `ticket` of a
-   * `CONNECT_HANDOFF_MESSAGE_TYPE` message, over the broadcast channel or, where the popup kept
-   * its opener, by `postMessage`). Activates the pending connect / reconnect /
+   * `CONNECT_HANDOFF_MESSAGE_TYPE` envelope on the same-origin broadcast channel of that name, posted
+   * by the gatekeeper's completion page or by the Workshop's own `/connect/handoff` page). Activates the pending connect / reconnect /
    * ensure-resources grant if it was started by this user, after which the account (or its
    * restored credentials) appears via subscribeConnectedAccounts(). Throws if the ticket is
    * unknown to this user, already redeemed, or expired.

@@ -1694,8 +1694,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   // --- Connect handoff (see connect-handoff.ts) ---
 
-  // Store a finished-but-unconfirmed flow and hand back the ticket its page must post to the
-  // Workshop window. Only the ticket's hash is kept, and only in this user's DO, so the ticket is
+  // Store a finished-but-unconfirmed flow and hand back the ticket its page must deliver to a
+  // Workshop tab. Only the ticket's hash is kept, and only in this user's DO, so the ticket is
   // redeemable by nobody else (completeConnectHandoff looks it up in the caller's own DO).
   async #stagePendingHandoff(
       record: Omit<PendingHandoffRecord, "ticketHash" | "expiresAt">): Promise<ConnectHandoff> {

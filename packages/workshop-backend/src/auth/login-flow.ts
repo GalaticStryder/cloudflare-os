@@ -8,12 +8,14 @@
 //   1. PublicApi.startGatekeeperLogin(vendorId) creates a PendingLogin DO (keyed by a random DO id),
 //      hands the gatekeeper a LoginConnectCallbackImpl, and returns {url, attempt}, where `attempt`
 //      is an RpcStub wrapping the DO (so the client awaits via a capability, never a guessable id).
-//   2. The browser opens `url` as a popup, keeping itself as the popup's opener.
+//   2. The browser opens `url` as a disowned popup, so no page in the flow holds a handle to it.
 //   3. When the gatekeeper finishes, it calls LoginConnectCallbackImpl.complete(user). We read the
 //      verified email, resolve/create the email-keyed user DO, mint a session, and deliver the token
 //      to the PendingLogin DO under the hash of a fresh handoff ticket, which complete() returns for
-//      the gatekeeper's final page to post to its opener (see connect-handoff.ts).
-//   4. The opener calls `attempt.claim(ticket)`, and the PendingLogin DO releases the token only for
+//      the gatekeeper's final page to broadcast on a same-origin channel to the login page — from
+//      the Workshop's own /connect/handoff page first when the gatekeeper is on another origin (see
+//      connect-handoff.ts).
+//   4. The login page calls `attempt.claim(ticket)`, and the PendingLogin DO releases the token only for
 //      a matching ticket; a ticket for some other attempt is answered with null and changes nothing,
 //      whether it arrives before or after this attempt's result has been delivered.
 //

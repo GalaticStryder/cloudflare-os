@@ -38,18 +38,26 @@ what persists a usable connected account. `GatekeeperVendor.connectAccount` take
    `PendingLogin` DO, hands the gatekeeper a `LoginConnectCallbackImpl`, and returns the gatekeeper's
    OAuth `url` plus an `attempt` stub (a capability wrapping the `PendingLogin` DO — no login id is
    exposed to the client).
-2. The client opens `url` as a pop-up, keeping itself as the pop-up's opener.
+2. The client opens `url` as a disowned pop-up (`openDisownedPopup` in
+   `workshop-frontend/src/connectHandoff.ts`): the window is opened empty, its `opener` is set to
+   null, and only then is it navigated, so no provider page ever holds a handle to the login page.
 3. When the gatekeeper finishes, it calls `complete(user)`. The callback reads
    `user.getAuthenticatedEmail()`, resolves/creates the email-keyed `UserDurableObject`, mints a
    session, and parks the `"<email>:<secret>"` token in the `PendingLogin` DO under the hash of a
-   fresh handoff ticket. `complete()` returns that ticket, and the gatekeeper's final page posts it to
-   its opener — exactly as the connect-account flow does (`connectHandoffPageHtml` in gatekeeper-kit).
-4. The opener calls `attempt.claim(ticket)`; the `PendingLogin` DO releases the token only for the
-   matching ticket, once. This is what binds the session to the browser that started the attempt:
-   the sign-in URL is a bearer capability, so whoever holds `attempt` without the ticket (an attacker
-   who phished a victim into finishing the flow) gets nothing, and the unclaimed token is wiped after
-   two minutes.
-5. The client stores the token and authenticates as usual.
+   fresh handoff ticket. `complete()` returns that ticket with the Workshop's origin as
+   `targetOrigin`, and the gatekeeper's final page (`connectHandoffPageHtml` in gatekeeper-kit)
+   broadcasts it on the same-origin `BroadcastChannel` named `CONNECT_HANDOFF_MESSAGE_TYPE` — exactly
+   as the connect-account flow does; see [connect-handoff.md](connect-handoff.md). When the gatekeeper
+   is served from another origin, that page first redirects the pop-up to the Workshop's own
+   `/connect/handoff` page with the ticket in the URL fragment, and that page broadcasts instead.
+4. The login page's channel listener (`components/auth/OAuthButtons`) calls `attempt.claim(ticket)`;
+   the `PendingLogin` DO releases the token only for the matching ticket, once, and answers null for
+   a ticket that is not this attempt's (a broadcast can carry another tab's). This is what binds the
+   session to the browser that started the attempt: the sign-in URL is a bearer capability, so
+   whoever holds `attempt` without the ticket (an attacker who phished a victim into finishing the
+   flow) gets nothing, and the unclaimed token is wiped after two minutes.
+5. The client acknowledges the ticket on the channel (`CONNECT_HANDOFF_ACK_MESSAGE_TYPE`, which lets
+   the pop-up close), stores the token and authenticates as usual.
 
 Sign-in does **not** persist a connected account: the minimal-scope grant is only used to read the
 email and is then discarded by the gatekeeper. To use a gatekeeper's capabilities (repos, Gmail/Docs)
@@ -93,4 +101,5 @@ auth/
 ```
 
 Client-side: `ServerConfigContext` exposes `authVendors` and `passwordAuthEnabled`;
-`components/auth/OAuthButtons` renders the sign-in options (pop-up + handoff ticket + `attempt.claim()`).
+`components/auth/OAuthButtons` renders the sign-in options (disowned pop-up + broadcast handoff
+ticket + `attempt.claim()`).

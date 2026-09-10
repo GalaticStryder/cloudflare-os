@@ -445,16 +445,15 @@ export type GatekeeperConnectOptions = {
 
 /**
  * The `type` field of the envelope `{type, ticket}` that a finished connect flow's browser tab
- * delivers to the Workshop, and the name of the same-origin `BroadcastChannel` it delivers over when
- * it has no opener to `postMessage` to. Versioned so the listener can ignore envelopes from an older
- * or newer page.
+ * delivers to the Workshop, and the name of the same-origin `BroadcastChannel` it delivers over.
+ * Versioned so the listener can ignore envelopes from an older or newer page.
  */
 export const CONNECT_HANDOFF_MESSAGE_TYPE = "gadgets.connect-handoff.v1";
 
 /**
  * The `type` field of the envelope `{type, ticket}` the Workshop posts back on the same
- * `BroadcastChannel` once it has redeemed a broadcast ticket, so the completion page stops repeating
- * the handoff and closes. Never sent to an opener: the Workshop closes that popup itself.
+ * `BroadcastChannel` once it has redeemed a broadcast ticket. It tells the broadcasting page that
+ * the ticket is spent and it may stop repeating the handoff and close itself.
  */
 export const CONNECT_HANDOFF_ACK_MESSAGE_TYPE = "gadgets.connect-handoff-ack.v1";
 
@@ -464,12 +463,22 @@ export const CONNECT_HANDOFF_ACK_MESSAGE_TYPE = "gadgets.connect-handoff-ack.v1"
  *
  * `ticket` is a single-use secret the Workshop redeems over the initiating user's authenticated RPC
  * session (`AuthenticatedApi.completeConnectHandoff`); the staged grant is activated only when it
- * arrives from that user. `targetOrigin` is the Workshop's origin. The completion page delivers the
- * envelope one of two ways: `postMessage` to its opener with `targetOrigin` passed verbatim, so a
- * browser drops the ticket if the opener is anyone else (sign-in popups keep their opener); or, for
- * a connect popup the Workshop disowned before navigating it, a `BroadcastChannel` that the page
- * opens only when it is itself on `targetOrigin` — the browser scopes the channel to that origin.
- * Over the channel the page repeats the envelope until a Workshop tab acknowledges it
+ * arrives from that user. `targetOrigin` is the Workshop's origin, from deployment configuration.
+ * One transport carries the envelope: a `BroadcastChannel` named `CONNECT_HANDOFF_MESSAGE_TYPE`,
+ * which the browser scopes to the origin of the document that opens it, so only a document on
+ * `targetOrigin` can reach the Workshop's listeners. The completion page gets there by one of two
+ * routes. When it is itself on `targetOrigin` it opens the channel and broadcasts directly. When it
+ * is on another origin it first navigates itself, with `location.replace()`, to
+ * `<targetOrigin>/connect/handoff#<ticket>` — the Workshop's own page, on `targetOrigin` by
+ * construction — which reads the ticket from the fragment, strips it from the address bar and
+ * broadcasts on the same channel; a URL fragment is sent to no server and appears in no `Referer`.
+ * That page's envelope also carries a `tab` field naming the Workshop tab that opened the popup (a
+ * token the popup inherited through the `sessionStorage` copy `window.open()` makes), and listeners
+ * accept an envelope with that field only from their own tab: the page broadcasts whatever ticket
+ * its URL carries, so a handoff link reached any other way must not put a ticket in front of a tab.
+ * A gatekeeper's completion page never sets the field; its ticket is the one the gatekeeper embedded
+ * for a flow reached only through its single-use URL.
+ * Either way the page repeats the envelope until a Workshop tab acknowledges it
  * (`CONNECT_HANDOFF_ACK_MESSAGE_TYPE`), since a tab whose session is mid-reconnect would miss a
  * one-shot broadcast; the ticket is single-use server-side, so the repeats are harmless.
  * Opaque to gatekeepers: they only render it into the completion page (see `connectHandoffPageHtml`
