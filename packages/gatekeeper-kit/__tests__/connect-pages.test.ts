@@ -50,8 +50,8 @@ describe("connect pages", () => {
 });
 
 describe("connectHandoffPageHtml", () => {
-  // Pulls the envelope and target origin the page's script posts out of its two literals.
-  function postMessageArgs(html: string): [unknown, string] {
+  // Pulls the envelope and target literals out of the page's script.
+  function scriptLiterals(html: string): [unknown, string] {
     const envelope = /var envelope = (.*);\n/.exec(html);
     const target = /var target = (".*?");\n/.exec(html);
     expect(envelope).not.toBeNull();
@@ -60,28 +60,35 @@ describe("connectHandoffPageHtml", () => {
     return [JSON.parse(envelope![1]), JSON.parse(target![1])];
   }
 
-  it("posts the versioned envelope to exactly the Workshop origin", () => {
+  it("navigates a popup that is not on the Workshop origin to the Workshop's handoff page with the ticket in the fragment", () => {
+    // The ticket may only reach a document on the backend-supplied Workshop origin. Off that origin
+    // the page cannot broadcast to the Workshop's tabs, so it carries the ticket there itself, in a
+    // fragment: never sent to a server or in Referer, and replace() leaves no history entry.
     const html = connectHandoffPageHtml(HANDOFF);
-    const [envelope, target] = postMessageArgs(html);
+    const [envelope, target] = scriptLiterals(html);
 
     expect(envelope).toEqual({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: HANDOFF.ticket });
     expect(target).toBe("https://workshop.example");
-    expect(html).toContain("opener.postMessage(envelope, target)");
+    expect(html).toContain("if (window.location.origin !== target)");
+    expect(html).toContain(
+      `window.location.replace(target + "/connect/handoff#" + encodeURIComponent(envelope.ticket))`);
+    // The origin check is the first branch: a page off the Workshop origin never opens a channel.
+    expect(html.indexOf("window.location.origin !== target"))
+      .toBeLessThan(html.indexOf("new BroadcastChannel"));
+    expect(html).not.toContain("opener");
+    expect(html).not.toContain("postMessage(envelope, target)");
   });
 
-  it("falls back to a same-origin BroadcastChannel named after the message type", () => {
-    // A disowned connect popup has no opener; only when the page is on the Workshop's own origin
-    // may it broadcast, and the channel name is the versioned message type so the listener and the
-    // page cannot drift apart.
+  it("broadcasts on the channel named after the message type when it is on the Workshop origin", () => {
+    // The browser scopes a BroadcastChannel to one origin, so this reaches Workshop tabs and nothing
+    // else; the channel name is the versioned message type so the listener and the page cannot
+    // drift apart.
     const html = connectHandoffPageHtml(HANDOFF);
 
-    expect(html).toContain(
-      `else if (window.location.origin === target && "BroadcastChannel" in window)`);
+    expect(html).toContain(`else if ("BroadcastChannel" in window)`);
     expect(html).toContain(
       `var channel = new BroadcastChannel(${JSON.stringify(CONNECT_HANDOFF_MESSAGE_TYPE)});`);
     expect(html).toContain("channel.postMessage(envelope);");
-    // The opener wins when there is one: sign-in and the dev server rely on it.
-    expect(html.indexOf("opener.postMessage")).toBeLessThan(html.indexOf("new BroadcastChannel"));
   });
 
   it("repeats a broadcast until the Workshop acknowledges this ticket, then closes", () => {
@@ -93,12 +100,11 @@ describe("connectHandoffPageHtml", () => {
     expect(html).toContain("setInterval(function () { channel.postMessage(envelope); }, 1000)");
     expect(html).toContain(`e.data.type === ${JSON.stringify(CONNECT_HANDOFF_ACK_MESSAGE_TYPE)}`);
     expect(html).toContain("e.data.ticket === envelope.ticket");
-    // Gives up after 30 s with the "couldn't reach" text rather than closing on a timer: the
-    // channel branch returns before the 2 s fallback close, which is for the opener branch only.
+    // Gives up after 30 s with the "couldn't reach" text; the ack is the only thing that closes the
+    // window, so the text stays readable.
     expect(html).toContain("setTimeout(function () { clearInterval(repeat); unreachable(); }, 30000)");
-    const channelBranch = html.slice(html.indexOf("var channel"), html.indexOf("} else {"));
-    expect(channelBranch).toContain("return;");
-    expect(channelBranch).not.toContain("2000");
+    expect(html).not.toContain("2000");
+    expect(html).not.toContain("setTimeout(function () { window.close(); }");
   });
 
   it("cannot be broken out of by the ticket or origin it embeds", () => {
@@ -108,12 +114,12 @@ describe("connectHandoffPageHtml", () => {
     expect(html).not.toContain("</script><img");
     expect(html.split("<script>")).toHaveLength(2);
     expect(html.split("</script>")).toHaveLength(2);
-    expect(postMessageArgs(html)[0]).toEqual({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: hostile.ticket });
+    expect(scriptLiterals(html)[0]).toEqual({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: hostile.ticket });
   });
 
   it("refuses a targetOrigin that is not exactly an origin", () => {
-    // A path or trailing slash would make the browser drop the message; an unparsable value or an
-    // opaque origin would be far worse — `postMessage(…, "*")` style delivery to anyone.
+    // A trailing slash or path would produce a malformed redirect; an unparsable value or an opaque
+    // origin would be far worse — it would send the ticket somewhere else.
     for (const targetOrigin of [
       "https://workshop.example/", "https://workshop.example/app", "*", "null", "workshop.example",
       "", "javascript:alert(1)",
@@ -125,17 +131,17 @@ describe("connectHandoffPageHtml", () => {
       .not.toThrow();
   });
 
-  it("tells the user when it can reach no Workshop, and only closes when it could", () => {
+  it("tells the user when it can reach no Workshop", () => {
+    // On the Workshop origin with no BroadcastChannel there is nothing left to try. No timer closes
+    // the window, so the message stays readable.
     const html = connectHandoffPageHtml(HANDOFF);
 
-    expect(html).toContain("if (opener && !opener.closed)");
-    expect(html).toContain("setTimeout(function () { window.close(); }, 2000)");
-    // The "couldn't reach" branch returns before the close timer, so the message stays readable.
-    expect(html.lastIndexOf("return;")).toBeLessThan(
-      html.indexOf("setTimeout(function () { window.close(); }, 2000)"));
+    const lastBranch = html.slice(html.lastIndexOf("} else {"));
+    expect(lastBranch).toContain("unreachable();");
     expect(html).toContain("couldn't reach the Workshop");
     expect(html).toContain("start the connection again");
     expect(html).toContain(`<meta name="referrer" content="strict-origin-when-cross-origin">`);
+    expect(html).not.toMatch(/setTimeout\(function \(\) \{ window\.close\(\)/);
   });
 });
 
