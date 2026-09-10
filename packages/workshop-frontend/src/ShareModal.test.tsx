@@ -8,11 +8,13 @@ import type { RpcStub } from 'capnweb'
 import type {
   AiChatAuthorInfo,
   AuthenticatedApi,
+  CollaboratorInfo,
   CollaboratorRole,
   GadgetMetadata,
   ObserverBindingNeed,
   Overseer,
   ShareLinkInfo,
+  UserDirectoryRecord,
 } from '@gadgets/workshop-shared/api'
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -68,12 +70,22 @@ vi.mock('./components/PersonAvatar', () => ({
 const copyToClipboard = vi.fn<(text: string) => Promise<boolean>>(async () => true)
 vi.mock('./clipboard', () => ({ copyToClipboard: (text: string) => copyToClipboard(text) }))
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 import ShareModal from './ShareModal'
 
 const METADATA = { id: 'trip-planner', title: 'Trip planner' } as GadgetMetadata
 const WORKSPACE_URL = `${window.location.origin}/workspace/trip-planner`
 
-const CURRENT_USER: AiChatAuthorInfo = { type: 'user', id: 'dan@cloudflare.com', name: 'Dan' }
+const CURRENT_USER: AiChatAuthorInfo = { id: 'dan@cloudflare.com', name: 'Dan' }
 
 const DOC_REQUIREMENT: ObserverBindingNeed = {
   gatekeeperId: 7,
@@ -101,6 +113,11 @@ type OverseerOverrides = {
   listObserverRequirements?: (role: CollaboratorRole) => Promise<ObserverBindingNeed[]>
   shareLinks?: ShareLinkInfo[]
   updateShareLink?: (linkId: string, note?: string) => Promise<void>
+  addCollaborator?: (
+    userId: string,
+    role: CollaboratorRole,
+    note?: string,
+  ) => Promise<CollaboratorInfo | null>
 }
 
 function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
@@ -111,17 +128,29 @@ function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
     listObserverRequirements:
       overrides.listObserverRequirements ??
       (async (role: CollaboratorRole) => requirements[role] ?? []),
-    addCollaborator: async () => ({
-      profile: { type: 'user', id: 'ada@cloudflare.com', name: 'Ada' },
+    addCollaborator: overrides.addCollaborator ?? (async () => ({
+      profile: { id: 'ada@cloudflare.com', name: 'Ada' },
       role: 'use',
       addedBy: [],
-    }),
+    })),
     createShareLink: async () => ({ key: 'secret', linkId: 'link-1' }),
     updateShareLink: overrides.updateShareLink ?? (async () => {}),
   } as unknown as RpcStub<Overseer>
 }
 
-const fakeAuthenticatedApi = {} as RpcStub<AuthenticatedApi>
+type AuthenticatedApiOverrides = {
+  searchUsers?: (query: string) => Promise<UserDirectoryRecord[]>
+}
+
+function fakeAuthenticatedApi(overrides: AuthenticatedApiOverrides = {}): RpcStub<AuthenticatedApi> {
+  return {
+    searchUsers: async (query: string) => query ? [{
+      id: `${query}@example.com`,
+      name: query === 'ada' ? 'Ada' : query,
+    }] : [],
+    ...overrides,
+  } as unknown as RpcStub<AuthenticatedApi>
+}
 
 function click(element: Element) {
   return act(async () => {
@@ -149,13 +178,21 @@ function verificationSection(rendered: HTMLElement, headingId: string): HTMLElem
   return section
 }
 
-async function invite(rendered: HTMLElement, username: string) {
-  const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Username or email"]')!
+async function typeDirectorySearch(rendered: HTMLElement, query: string) {
+  const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
   const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
   await act(async () => {
-    setValue.call(input, username)
+    setValue.call(input, query)
     input.dispatchEvent(new Event('input', { bubbles: true }))
+    await new Promise(resolve => window.setTimeout(resolve, 225))
   })
+}
+
+async function invite(rendered: HTMLElement, username: string) {
+  await typeDirectorySearch(rendered, username)
+  const option = rendered.querySelector<HTMLButtonElement>('[role="option"]')
+  if (!option) throw new Error('Expected a directory search result.')
+  await click(option)
   await click(button(rendered, 'Invite'))
 }
 
@@ -174,7 +211,10 @@ describe('ShareModal', () => {
     container = undefined
   })
 
-  async function render(overseer: RpcStub<Overseer>) {
+  async function render(
+    overseer: RpcStub<Overseer>,
+    authenticatedApi = fakeAuthenticatedApi(),
+  ) {
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
@@ -186,8 +226,8 @@ describe('ShareModal', () => {
           overseer={overseer}
           metadata={METADATA}
           currentUser={CURRENT_USER}
-          authenticatedApi={fakeAuthenticatedApi}
-        />,
+          authenticatedApi={authenticatedApi}
+        />
       )
     })
     // Let the load effects settle.
@@ -213,6 +253,91 @@ describe('ShareModal', () => {
 
     expect(copyToClipboard).toHaveBeenCalledWith(WORKSPACE_URL)
     expect(rendered.textContent).toContain('Link copied')
+  })
+
+  it('submits the selected directory result id', async () => {
+    const addCollaborator = vi.fn<(
+      userId: string,
+      role: CollaboratorRole,
+      note?: string,
+    ) => Promise<CollaboratorInfo | null>>(async (userId, role) => ({
+      profile: { type: 'user' as const, id: userId, name: 'Ada Lovelace' },
+      role,
+      addedBy: [],
+    }))
+    const searchUsers = vi.fn<(query: string) => Promise<UserDirectoryRecord[]>>(async () => [
+      { id: 'ada@cloudflare.com', name: 'Ada Lovelace' },
+    ])
+    const rendered = await render(
+      fakeOverseer({ addCollaborator }),
+      fakeAuthenticatedApi({ searchUsers }),
+    )
+
+    await typeDirectorySearch(rendered, 'love')
+    expect(searchUsers).toHaveBeenCalledWith('love')
+    expect(rendered.textContent).toContain('Ada Lovelace')
+    expect(rendered.textContent).toContain('ada@cloudflare.com')
+
+    await click(rendered.querySelector<HTMLButtonElement>('[role="option"]')!)
+    expect(rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')?.value)
+      .toBe('Ada Lovelace')
+    await click(button(rendered, 'Invite'))
+
+    expect(addCollaborator).toHaveBeenCalledWith('ada@cloudflare.com', 'use', undefined)
+  })
+
+  it('ignores stale searches and selects the highlighted result with Enter', async () => {
+    const first = deferred<UserDirectoryRecord[]>()
+    const second = deferred<UserDirectoryRecord[]>()
+    const searchUsers = vi.fn<(query: string) => Promise<UserDirectoryRecord[]>>(
+      query => query === 'ada' ? first.promise : second.promise,
+    )
+    const rendered = await render(
+      fakeOverseer(),
+      fakeAuthenticatedApi({ searchUsers }),
+    )
+
+    await typeDirectorySearch(rendered, 'ada')
+    await typeDirectorySearch(rendered, 'grace')
+    await act(async () => {
+      second.resolve([{ id: 'grace@example.com', name: 'Grace Hopper' }])
+      await Promise.resolve()
+    })
+    expect(rendered.textContent).toContain('Grace Hopper')
+
+    await act(async () => {
+      first.resolve([{ id: 'ada@example.com', name: 'Ada Lovelace' }])
+      await Promise.resolve()
+    })
+    expect(rendered.textContent).not.toContain('Ada Lovelace')
+
+    const input = rendered.querySelector<HTMLInputElement>('input[aria-label="Search people"]')!
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(input.value).toBe('Grace Hopper')
+  })
+
+  it('keeps share links available while directory search loads or fails', async () => {
+    const offline = deferred<UserDirectoryRecord[]>()
+    const searchUsers = (query: string) => query === 'offline' ? offline.promise : Promise.resolve([])
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const rendered = await render(
+      fakeOverseer(),
+      fakeAuthenticatedApi({ searchUsers }),
+    )
+    await typeDirectorySearch(rendered, 'offline')
+    expect(rendered.textContent).toContain('Searching…')
+    expect(button(rendered, 'Create a share link').disabled).toBe(false)
+
+    await act(async () => {
+      offline.reject(new Error('offline'))
+      await Promise.resolve()
+    })
+    expect(rendered.textContent).toContain('User search is temporarily unavailable.')
+    expect(button(rendered, 'Create a share link').disabled).toBe(false)
+
+    await typeDirectorySearch(rendered, 'nobody')
+    expect(rendered.textContent).toContain('No users found.')
+    consoleError.mockRestore()
   })
 
   it('names the connections a recipient must verify for the selected role', async () => {

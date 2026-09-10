@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, useId, type KeyboardEvent, type ReactNode } from 'react'
 import { Checkbox, Dialog, DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import type { PortalContainer } from '@cloudflare/kumo'
 import { CaretDown, Check, Copy, Link, PencilSimple, ShieldCheck, ShieldWarning, Trash, UserPlus, X } from '@phosphor-icons/react'
@@ -13,6 +13,7 @@ import {
   AiChatAuthorInfo,
   CollaboratorRole,
   ObserverBindingNeed,
+  UserDirectoryRecord,
 } from '@gadgets/workshop-shared/api'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import { PersonAvatar } from './components/PersonAvatar'
@@ -22,6 +23,9 @@ import { isImeComposing } from './keyboardEvent'
 type CollaboratorRow =
   | { kind: 'owner'; profile: AiChatAuthorInfo }
   | { kind: 'collaborator'; info: CollaboratorInfo }
+
+type DirectorySearch = { status: 'loading' | 'failed' | 'ready'; results: UserDirectoryRecord[] }
+const NO_DIRECTORY_SEARCH: DirectorySearch = { status: 'ready', results: [] }
 
 type ConfirmationTarget =
   | { kind: 'remove'; profileId: string; dependents: AffectedCollaborator[]; previewing: boolean; keepSet: Set<string> }
@@ -299,6 +303,12 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const [collaborators, setCollaborators] = useState<CollaboratorInfo[]>([])
   const [shareLinks, setShareLinks] = useState<ShareLinkInfo[]>([])
   const [addUsername, setAddUsername] = useState('')
+  const [directory, setDirectory] = useState<DirectorySearch>(NO_DIRECTORY_SEARCH)
+  const [selectedUser, setSelectedUser] = useState<UserDirectoryRecord | null>(null)
+  const [activeDirectoryIndex, setActiveDirectoryIndex] = useState(0)
+  const directoryListboxId = useId()
+  const directoryQuery = addUsername.trim()
+  const directoryOpen = selectedUser === null && directoryQuery !== ''
   const [addRole, setAddRole] = useState<CollaboratorRole>('use')
   const [adding, setAdding] = useState(false)
   const [newLinkRole, setNewLinkRole] = useState<CollaboratorRole>('use')
@@ -358,6 +368,30 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current)
     }
   }, [])
+
+  useEffect(() => {
+    if (!open || !directoryOpen) {
+      setDirectory(NO_DIRECTORY_SEARCH)
+      return
+    }
+    let cancelled = false
+    setDirectory({ status: 'loading', results: [] })
+    setActiveDirectoryIndex(0)
+    // Debounced: every keystroke from every user would otherwise hit the one directory DO.
+    const timer = window.setTimeout(() => {
+      authenticatedApi.searchUsers(directoryQuery).then(
+        results => { if (!cancelled) setDirectory({ status: 'ready', results }) },
+        error => {
+          if (cancelled) return
+          console.error('Failed to search user directory:', error)
+          setDirectory({ status: 'failed', results: [] })
+        })
+    }, 200)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [authenticatedApi, directoryOpen, directoryQuery, open])
 
   useEffect(() => {
     const element = document.createElement('div')
@@ -426,6 +460,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       if (!wasOpenRef.current) {
         setAddUsername('')
         setNewShareLink(null)
+        setSelectedUser(null)
         setNewShareLinkId(null)
         setNewShareLinkCopied(false)
         setInvitedName(null)
@@ -557,27 +592,51 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     }, 2200)
   }
 
+  const selectDirectoryUser = (user: UserDirectoryRecord) => {
+    setSelectedUser(user)
+    setAddUsername(user.name)
+  }
+
+  const handleDirectoryKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (isImeComposing(event) || selectedUser !== null) return
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      const user = directory.results[activeDirectoryIndex]
+      if (user) selectDirectoryUser(user)
+      return
+    }
+    if (directory.results.length > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+      event.preventDefault()
+      const direction = event.key === 'ArrowDown' ? 1 : -1
+      setActiveDirectoryIndex(current =>
+        (current + direction + directory.results.length) % directory.results.length)
+    }
+  }
+
   const handleAddCollaborator = async () => {
-    const username = addUsername.trim()
-    if (!username || sharingProhibited || addingRef.current) return
+    if (!selectedUser || sharingProhibited || addingRef.current) return
 
     addingRef.current = true
     setAdding(true)
     try {
-      const result = await overseer.addCollaborator(username, addRole, undefined)
+      const result = await overseer.addCollaborator(selectedUser.id, addRole, undefined)
       if (result === null) {
-        toasts.add({ title: 'No account found for that username.', variant: 'error' })
+        toasts.add({ title: 'That account is no longer available.', variant: 'error' })
       } else {
         const landedId = result.profile.id
         setAddUsername('')
+        setSelectedUser(null)
         setInvitedName(result.profile.name)
         setInvitedLinkCopied(false)
         await loadData()
         showLandedRow('person', landedId)
         toasts.add({ title: `Added ${result.profile.name} as a collaborator.`, variant: 'success' })
       }
-    } catch (err: any) {
-      toasts.add({ title: err.message || 'Failed to add collaborator.', variant: 'error' })
+    } catch (error: unknown) {
+      toasts.add({
+        title: error instanceof Error ? error.message : 'Failed to add collaborator.',
+        variant: 'error',
+      })
     } finally {
       addingRef.current = false
       setAdding(false)
@@ -794,7 +853,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
           <>
           <div className={`sticky top-0 z-10 bg-kumo-base pb-3 transition-shadow duration-200 ${scrolled ? 'themed-bottom-shadow border-b border-kumo-line/60' : ''}`}>
           <div
-            className="themed-compact-shadow grid min-h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-kumo-line/80 bg-kumo-base p-1.5 pl-3 transition-[border-color,box-shadow] focus-within:border-kumo-fill sm:flex sm:overflow-hidden"
+            className="themed-compact-shadow grid min-h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-kumo-line/80 bg-kumo-base p-1.5 pl-3 transition-[border-color,box-shadow] focus-within:border-kumo-fill sm:flex"
             data-keeper-ignore="true"
             data-1p-ignore="true"
             data-lpignore="true"
@@ -803,26 +862,81 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
             <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-kumo-tint text-kumo-subtle">
               <UserPlus size={15} weight="duotone" />
             </div>
-            <input
-              type="search"
-              placeholder="Username or email"
-              aria-label="Username or email"
-              value={addUsername}
-              onChange={(e) => setAddUsername(e.target.value)}
-              onKeyDown={(e) => { if (!isImeComposing(e) && e.key === 'Enter') handleAddCollaborator() }}
-              name="gadget-share-people-search"
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="none"
-              spellCheck={false}
-              data-keeper-ignore="true"
-              data-1p-ignore="true"
-              data-lpignore="true"
-              data-bwignore="true"
-              data-form-type="other"
-              className="h-9 min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:hidden"
-              disabled={sharingProhibited}
-            />
+            <div className="relative min-w-0 flex-1">
+              <input
+                type="search"
+                role="combobox"
+                placeholder="Search by name or email"
+                aria-label="Search people"
+                aria-autocomplete="list"
+                aria-expanded={directoryOpen}
+                aria-controls={directoryOpen ? directoryListboxId : undefined}
+                aria-activedescendant={directory.results[activeDirectoryIndex]
+                  ? `${directoryListboxId}-option-${activeDirectoryIndex}`
+                  : undefined}
+                value={addUsername}
+                onChange={(event) => {
+                  setAddUsername(event.target.value)
+                  setSelectedUser(null)
+                }}
+                onKeyDown={handleDirectoryKeyDown}
+                name="gadget-share-people-search"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                data-keeper-ignore="true"
+                data-1p-ignore="true"
+                data-lpignore="true"
+                data-bwignore="true"
+                data-form-type="other"
+                className="h-9 w-full min-w-0 appearance-none border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:hidden"
+                disabled={sharingProhibited}
+              />
+              {directoryOpen && (
+                <div
+                  id={directoryListboxId}
+                  role="listbox"
+                  aria-label="Matching people"
+                  aria-busy={directory.status === 'loading'}
+                  className="themed-floating-shadow-lg absolute left-0 top-full z-30 mt-2 max-h-64 w-[min(24rem,calc(100vw-3rem))] overflow-y-auto rounded-2xl border border-kumo-line/70 bg-kumo-base p-2"
+                >
+                  {directory.status === 'loading' ? (
+                    <p role="status" className="px-3 py-2 text-[12px] text-kumo-subtle">Searching…</p>
+                  ) : directory.status === 'failed' ? (
+                    <p role="status" className="px-3 py-2 text-[12px] text-kumo-danger">
+                      User search is temporarily unavailable.
+                    </p>
+                  ) : directory.results.length === 0 ? (
+                    <p role="status" className="px-3 py-2 text-[12px] text-kumo-subtle">No users found.</p>
+                  ) : directory.results.map((user, index) => (
+                    <button
+                      key={user.id}
+                      id={`${directoryListboxId}-option-${index}`}
+                      type="button"
+                      role="option"
+                      aria-selected={index === activeDirectoryIndex}
+                      onMouseEnter={() => setActiveDirectoryIndex(index)}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => selectDirectoryUser(user)}
+                      className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left ${
+                        index === activeDirectoryIndex ? 'bg-kumo-tint' : 'hover:bg-kumo-tint/70'
+                      }`}
+                    >
+                      <PersonAvatar api={authenticatedApi} userId={user.id} name={user.name} size={32} />
+                      <span className="min-w-0">
+                        <span className="block truncate text-[13px] font-medium text-kumo-default">
+                          {user.name}
+                        </span>
+                        <span className="block truncate font-mono text-[11px] text-kumo-subtle">
+                          {user.id}
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <RoleMenu
               ariaLabel="Access to grant"
               value={addRole}
@@ -834,7 +948,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
               tone="primary"
               className="col-span-3 w-full !rounded-xl sm:col-span-1 sm:w-auto sm:min-w-[68px]"
               onClick={handleAddCollaborator}
-              disabled={!addUsername.trim() || adding || sharingProhibited}
+              disabled={!selectedUser || adding || sharingProhibited}
             >
               {adding ? 'Inviting…' : 'Invite'}
             </WorkshopButton>

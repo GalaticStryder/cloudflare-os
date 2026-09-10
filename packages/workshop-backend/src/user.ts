@@ -241,6 +241,9 @@ function makeUserStorage(storage: DurableObjectStorage) {
       //
       // null = password disabled (e.g. because some other auth mechanism is used)
       passwordHashHash: <Uint8Array | null>null,
+      // Display name last written to the deployment-wide user directory. Null means never synced,
+      // which also lazily backfills users created before the directory existed.
+      directoryName: <string | null>null,
     }
   });
 }
@@ -321,6 +324,23 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.vendors = buildGatekeeperVendorMap(env);
   }
 
+  // Mirrors profile information into the deployment-wide user directory when it
+  // differs from what was last written.
+  async #syncDirectory(): Promise<void> {
+    const profile = this.storage.profile.get();
+    if (profile.name === this.storage.directoryName.get()) return;
+    try {
+      await this.ctx.exports.UserDirectoryDurableObject.getByName("")
+          .syncUser({ id: profile.id, name: profile.name });
+      this.storage.directoryName.put(profile.name);
+    } catch (error) {
+      logger.warn("failed to sync user directory record", {
+        event: "user.directory.sync.failed",
+        error,
+      });
+    }
+  }
+
   async authenticate(token: string): Promise<void> {
     let tokenBytes: Uint8Array;
     try {
@@ -336,6 +356,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!session) {
       throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
     }
+    await this.#syncDirectory();
   }
 
   /**
@@ -344,7 +365,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * existing users can still sign in.
    */
   async authenticateFromCfAccess(email: string, allowCreate: boolean): Promise<boolean> {
-    if (!this.storage.created.get()) {
+    const isNew = !this.storage.created.get();
+    if (isNew) {
       if (!allowCreate) {
         throw new Error("New sign-ups are currently disabled on this deployment.");
       }
@@ -355,10 +377,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         name: email.split("@")[0],
         id: email,
       });
-      return true;
     }
-
-    return false;
+    await this.#syncDirectory();
+    return isNew;
   }
 
   async #newSessionToken(): Promise<string> {
@@ -539,6 +560,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let profile = this.storage.profile.get();
     profile.name = name;
     this.storage.profile.put(profile);
+    await this.#syncDirectory();
   }
 
   async listModels(): Promise<AiChatAuthorInfo[]> {
