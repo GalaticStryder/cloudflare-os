@@ -40,7 +40,6 @@ vi.mock('./useAuth', () => ({
 import BlueprintLandingPage from './BlueprintLandingPage'
 import { AuthProvider } from './AuthContext'
 import { CONNECT_HANDOFF_MESSAGE_TYPE } from '@gadgets/workshop-shared/gatekeeper'
-import { gatekeeperOrigin } from './connectHandoff'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const originalInnerWidth = window.innerWidth
@@ -137,6 +136,17 @@ describe('BlueprintLandingPage model configuration', () => {
   })
 })
 
+// What a finished connect popup does, as heard by a tab that opened one: the marker
+// `openConnectWindow` leaves is set, then the ticket is broadcast on the same-origin channel.
+async function postTicket() {
+  sessionStorage.setItem('gadgets.connectPending', String(Date.now()))
+  const channel = new BroadcastChannel(CONNECT_HANDOFF_MESSAGE_TYPE)
+  // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel has no targetOrigin.
+  channel.postMessage({ type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: 'c'.repeat(64) })
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+  channel.close()
+}
+
 // A signed-out visitor who logs in on this page does so through the page's own useAuth(): the root
 // route stays standalone, with no AuthProvider and so no app-shell ConnectHandoffListener. The page
 // must then redeem connect tickets itself, and must not when the shell is already doing so.
@@ -150,6 +160,7 @@ describe('BlueprintLandingPage connect handoff', () => {
     rootContainer?.remove()
     testState.authenticatedApi = null
     completeConnectHandoff.mockReset()
+    sessionStorage.clear()
   })
 
   function apiWithHandoff(): RpcStub<AuthenticatedApi> {
@@ -167,14 +178,6 @@ describe('BlueprintLandingPage connect handoff', () => {
     root = createRoot(rootContainer)
     await act(async () => root!.render(element))
     await act(async () => { await Promise.resolve() })
-  }
-
-  async function postTicket() {
-    window.dispatchEvent(new MessageEvent('message', {
-      data: { type: CONNECT_HANDOFF_MESSAGE_TYPE, ticket: 'c'.repeat(64) },
-      origin: gatekeeperOrigin(),
-    }))
-    await act(async () => { await Promise.resolve(); await Promise.resolve() })
   }
 
   it('redeems a connect ticket itself after an inline login', async () => {

@@ -5,7 +5,7 @@ import {
   CONNECT_HANDOFF_ACK_MESSAGE_TYPE, CONNECT_HANDOFF_MESSAGE_TYPE,
 } from '@gadgets/workshop-shared/gatekeeper'
 import { Button, Banner } from '@cloudflare/kumo'
-import { connectHandoffTicket, parseHandoffEnvelope } from '../../connectHandoff'
+import { openDisownedPopup, parseHandoffEnvelope } from '../../connectHandoff'
 
 interface OAuthButtonsProps {
   rpcStub: RpcStub<PublicApi>
@@ -19,24 +19,28 @@ const CANCELLED = Symbol('sign-in cancelled')
 
 /**
  * Renders a sign-in button per auth-capable gatekeeper vendor. Clicking opens the gatekeeper's
- * OAuth popup with this window as its opener; when the flow finishes, the popup delivers a handoff
- * ticket back here, which is redeemed over RPC for the session token. The ticket is what ties the
- * session to this browser: the sign-in URL alone can be finished by anyone (see connectHandoff.ts).
- * On success the token is stored and the app re-authenticates.
+ * OAuth popup, disowned so no provider page ever holds this window as its opener; when the flow
+ * finishes, the popup delivers a handoff ticket back here, which is redeemed over RPC for the
+ * session token. The ticket is what ties the session to this browser: the sign-in URL alone can be
+ * finished by anyone (see connectHandoff.ts). On success the token is stored and the app
+ * re-authenticates.
  *
- * The ticket arrives over one of two transports. Normally the popup posts it to its opener. A
- * provider that isolates its pages with COOP severs that opener mid-flow, though (Google stages
- * this), and the handoff page then falls back to a same-origin BroadcastChannel — which reaches us
- * because in production the login page shares an origin with the handoff page. A broadcast has no
- * source to filter on, so a ticket heard there may be another tab's sign-in or an account-connect
- * ticket; the server answers such a claim with null, and we keep listening for ours.
+ * The ticket arrives over one transport: the same-origin BroadcastChannel named
+ * `CONNECT_HANDOFF_MESSAGE_TYPE`, broadcast by the gatekeeper's completion page when the gatekeeper
+ * shares our origin, or by our own `/connect/handoff` page after a gatekeeper on another origin
+ * redirected the popup there. A broadcast has no source to filter on, so a ticket heard here may be
+ * another tab's sign-in or an account-connect ticket; the server answers such a claim with null, and
+ * we keep listening for ours. An envelope from the handoff page is taken only when it names this
+ * tab's token (`parseHandoffEnvelope`), which the popup inherited when this page opened it: that page
+ * broadcasts whatever ticket its URL carries, and a ticket someone else finished a leaked sign-in
+ * with must not log this browser in as them because the user clicked a link.
  */
 export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButtonsProps) {
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState<string | null>(null)
 
   // The attempt in flight, if any, as the function that tears it down: stops the popup poll, drops
-  // both ticket listeners and disposes the login RPC (Cap'n Web treats this as a best-effort cancel
+  // the ticket listener and disposes the login RPC (Cap'n Web treats this as a best-effort cancel
   // and frees the client-side pending call). Run when the component unmounts mid-login (e.g. the
   // user navigates away) and when a new attempt starts, so at most one attempt is ever listening.
   const attemptRef = useRef<(() => void) | null>(null)
@@ -73,14 +77,15 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
         dispose()
         return
       }
-      // Unlike account-connect popups (see openConnectWindow), a login popup deliberately keeps this
-      // window as its opener: sign-in providers are admin-allowlisted, and the opener is how the
-      // ticket normally comes back (postMessage). Don't pass "noopener" — window.open() returns null
-      // with it, indistinguishable from a pop-up block.
-      const popup = window.open(url, 'gatekeeper-login', 'popup,width=520,height=680')
-      if (!popup) {
+      // Disowned like account-connect popups: sign-in providers are admin-allowlisted, but the popup
+      // traverses provider pages all the same, and none of them may hold a handle to this window.
+      // Throws the pop-up-blocked error itself.
+      let popup: Window
+      try {
+        popup = openDisownedPopup(url, 'gatekeeper-login')
+      } catch (err) {
         dispose()
-        throw new Error('Pop-up blocked. Please allow pop-ups and try again.')
+        throw err
       }
       // Resolve once a ticket arrives and the claim succeeds; reject if the claim fails or the
       // attempt is torn down.
@@ -94,16 +99,16 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
         function stopPolling() {
           if (poll !== null) { clearInterval(poll); poll = null }
         }
-        // An arrow, not a declaration: only a closure created after the null check above sees
-        // `popup` narrowed.
         const startPolling = () => {
           if (poll !== null) return
           poll = window.setInterval(() => {
             if (!popup.closed) return
-            // Not necessarily a cancellation: a provider that swaps browsing context groups (COOP)
-            // reports the popup closed while the flow is still running, and its ticket will arrive
-            // over the channel. So just hand the buttons back and keep listening; if the user really
-            // closed it, nothing arrives and the attempt ends with the next one or on unmount.
+            // The handle reports closed when the user closed the popup — and also when a provider's
+            // COOP moved the popup to another browsing context group mid-flow (Google does), which
+            // discards the context this handle points at while the flow runs on. Either way: hand the
+            // buttons back and keep listening, since the attempt itself is still live; if nothing
+            // arrives it ends with the next attempt or on unmount. The page closes itself after the
+            // ack, and polling pauses during a claim so that self-close is not read as a cancellation.
             stopPolling()
             if (mountedRef.current) setPending(null)
           }, 500)
@@ -113,7 +118,6 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           settled = true
           attemptRef.current = null
           stopPolling()
-          window.removeEventListener('message', onMessage)
           channel?.close()
           dispose()
           fn()
@@ -132,23 +136,14 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
                 startPolling()
                 return
               }
-              // A popup whose opener COOP severed broadcasts, and repeats until acknowledged.
+              // The broadcasting page repeats until acknowledged; the ack tells it to close.
               // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel has no targetOrigin.
               channel?.postMessage({ type: CONNECT_HANDOFF_ACK_MESSAGE_TYPE, ticket })
               finish(() => resolve(t))
             })
             .catch(e => finish(() => reject(e instanceof Error ? e : new Error('Could not sign in'))))
         }
-        function onMessage(event: MessageEvent) {
-          // Unlike the connect listener, this page holds the popup handle, so a ticket from any
-          // other window (say, an account-connect popup that outlived a logout) is not ours: claiming
-          // it would only burn this attempt.
-          if (event.source !== popup) return
-          const ticket = connectHandoffTicket(event)
-          if (ticket !== null) claimTicket(ticket)
-        }
 
-        window.addEventListener('message', onMessage)
         channel?.addEventListener('message', (event: MessageEvent) => {
           const ticket = parseHandoffEnvelope(event.data)
           if (ticket !== null) claimTicket(ticket)
@@ -156,8 +151,8 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
         startPolling()
         attemptRef.current = () => finish(() => reject(CANCELLED))
       })
-      // Best-effort: after a COOP swap the handle is dead, and the page closes itself anyway.
-      try { popup.close() } catch { /* severed */ }
+      // Best-effort: the page closes itself on the ack anyway.
+      try { popup.close() } catch { /* already gone */ }
       if (!mountedRef.current) return  // user navigated away mid-flow; drop the result
       localStorage.setItem('authToken', token)
       if (onSuccess) onSuccess()

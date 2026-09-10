@@ -8,6 +8,7 @@ import { useRpcStub, useConnectionLost } from '../RpcContext'
 import { useAuth, CF_ACCESS_MODE } from '../useAuth'
 import { AuthProvider } from '../AuthContext'
 import { ConnectHandoffListener } from '../ConnectHandoffListener'
+import { HANDOFF_PATH } from '../connectHandoff'
 import { FeatureFlagsProvider } from '../FeatureFlagsContext'
 import Header from '../components/Header'
 import AppShell from '../components/AppShell/AppShell'
@@ -28,11 +29,17 @@ function RootComponent() {
   // Routes that don't require auth (public routes)
   const isSignup = pathname === '/signup'
   const isBlueprint = pathname.startsWith('/blueprint/')
+  // The connect handoff page is public and always standalone: it renders in a popup that must work
+  // signed-out (a sign-in flow has no session yet) and must not wait on auth. It must also NOT mount
+  // ConnectHandoffListener: a window.open()ed popup inherits a copy of the opener's sessionStorage,
+  // including the gadgets.connectPending marker, so a listener in the popup would race the real tab
+  // for its own ticket.
+  const isHandoff = pathname === HANDOFF_PATH
 
   // A standalone (no app shell) render is used only for signed-out visitors of public routes.
   // Signed-in users get the full app chrome so public pages (esp. the blueprint detail) feel
   // native — sidebar and all — instead of floating on a bare page.
-  const standalone = isSignup || (isBlueprint && !isAuthenticated)
+  const standalone = isSignup || isHandoff || (isBlueprint && !isAuthenticated)
 
   // The workspace editor renders fullscreen (no app chrome). /gadget/ is the legacy URL, kept
   // here so the chrome doesn't flash in during the redirect to /workspace/.
@@ -87,7 +94,7 @@ function RootComponent() {
 
   // Signed-out visitors of public routes render without the auth wrapper / app shell.
   if (standalone) {
-    const showHeader = !isSignup
+    const showHeader = !isSignup && !isHandoff
     return (
       <TooltipProvider>
         <Toasty>
