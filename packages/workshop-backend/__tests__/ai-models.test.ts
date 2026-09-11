@@ -109,7 +109,7 @@ describe("getModel AI Gateway routing", () => {
     // fetch, so only the descriptor is asserted here; the header behavior is the SDK's.
     const handle = getModel(env(), {
       provider: "google",
-      model: "gemini-2.5-flash",
+      model: "gemini-3.8-flash",
       apiToken: "ignored-in-gateway-mode",
     }, INITIATOR);
 
@@ -363,7 +363,7 @@ describe("getModel AI Gateway binding transport", () => {
 
     const googleHandle = getModel(hybridEnv, {
       provider: "google",
-      model: "gemini-2.5-flash",
+      model: "gemini-3.8-flash",
       apiToken: "ignored-in-gateway-mode",
     }, INITIATOR);
     expect(googleHandle.model.baseUrl).toBe(
@@ -389,7 +389,7 @@ describe("getModel AI Gateway binding transport", () => {
   it("rejects a stored google config when the deployment has no token", () => {
     expect(() => getModel(bindingEnv(), {
       provider: "google",
-      model: "gemini-2.5-flash",
+      model: "gemini-3.8-flash",
       apiToken: "ignored-in-gateway-mode",
     }, INITIATOR)).toThrow(
         'Provider "google" cannot use the Workers AI binding transport');
