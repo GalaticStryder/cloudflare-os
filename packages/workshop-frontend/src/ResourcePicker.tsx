@@ -1,4 +1,5 @@
 import { logRpcFailure } from './rpcErrors'
+import { openGatekeeperPopup } from './openGatekeeperPopup'
 import { useState, useEffect, useMemo, useCallback, type MutableRefObject } from 'react'
 import { Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import { Plus, CaretRight, Warning } from '@phosphor-icons/react'
@@ -399,7 +400,7 @@ export default function ResourcePicker({
     setConnectingVendor(vendorId)
     try {
       const result = await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns)
-      window.open(result.url, '_blank', 'noopener,noreferrer')
+      openGatekeeperPopup(result.url)
     } catch (error) {
       console.error('Failed to initiate connection:', error)
       toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
@@ -416,7 +417,7 @@ export default function ResourcePicker({
     try {
       const result = await authenticatedApi.ensureAccountResources(accountId, resourceUrlPatterns)
       if (result.url) {
-        window.open(result.url, '_blank', 'noopener,noreferrer')
+        openGatekeeperPopup(result.url)
         toasts.add({ title: 'Grant the additional access in the new tab.', variant: 'success' })
       }
     } catch (error) {
@@ -433,7 +434,7 @@ export default function ResourcePicker({
     setReconnectingAccount(accountId)
     try {
       const result = await authenticatedApi.reconnectAccount(accountId)
-      window.open(result.url, '_blank', 'noopener,noreferrer')
+      openGatekeeperPopup(result.url)
       // The subscription will fire add() with credentialsValid: true when reconnect completes.
       // The reconnectingAccount state is cleared at that point.
     } catch (error) {

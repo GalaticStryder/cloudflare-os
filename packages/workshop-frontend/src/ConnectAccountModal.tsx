@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { openGatekeeperPopup } from './openGatekeeperPopup'
 import { Dialog, Text, Loader, useKumoToastManager } from '@cloudflare/kumo'
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi, GatekeeperVendorFilter } from '@gadgets/workshop-shared/api'
@@ -65,7 +66,7 @@ export default function ConnectAccountModal({
     setConnecting(vendorId)
     try {
       const result = await authenticatedApi.connectAccount(vendorId)
-      window.open(result.url, '_blank', 'noopener,noreferrer')
+      openGatekeeperPopup(result.url)
       onInitiated()
     } catch (error) {
       console.error('Failed to initiate connection:', error)
