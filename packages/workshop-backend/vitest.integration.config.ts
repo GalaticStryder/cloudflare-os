@@ -29,6 +29,17 @@ export default defineConfig({
     }),
   ],
   test: {
+    deps: {
+      optimizer: {
+        ssr: {
+          enabled: true,
+          include: [
+            "@earendil-works/pi-ai > partial-json",
+            "@earendil-works/pi-ai > @google/genai > p-retry",
+          ],
+        },
+      },
+    },
     include: ["__integration__/*.test.ts"],
     // Asserts the pool actually started, rather than trusting a green run to mean workerd.
     setupFiles: ["../../scripts/assert-workerd.ts"],
