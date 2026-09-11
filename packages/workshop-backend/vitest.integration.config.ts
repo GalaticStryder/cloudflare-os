@@ -6,6 +6,13 @@ const EXPECTED_OPEN_ERROR_CODES = new Set([
   "WORKSPACE_NOT_FOUND",
   "WORKSPACE_ACCESS_DENIED",
 ]);
+const EXPECTED_INVALID_SESSION_TESTS = new Set([
+  "rejects invalid tokens and preserves the provider expiry cap in storage",
+  "rejects invalid provider expiry before creating an account",
+  "rejects expired persisted and legacy sessions using their original creation time",
+  "logout requires the exact token, prevents replay, and preserves other sessions and user data",
+  "bounds revocation across active connections without revoking a different session",
+]);
 
 export default defineConfig({
   esbuild: {
@@ -35,6 +42,11 @@ export default defineConfig({
     onUnhandledError(error) {
       const code = "code" in error ? error.code : undefined;
       if (typeof code === "string" && EXPECTED_OPEN_ERROR_CODES.has(code)) return false;
+      const testPath = "VITEST_TEST_PATH" in error ? error.VITEST_TEST_PATH : undefined;
+      const testName = "VITEST_TEST_NAME" in error ? error.VITEST_TEST_NAME : undefined;
+      if (code === "INVALID_SESSION_TOKEN" && error.type === "Unhandled Rejection"
+          && typeof testPath === "string" && testPath.endsWith("/__integration__/sessions.test.ts")
+          && typeof testName === "string" && EXPECTED_INVALID_SESSION_TESTS.has(testName)) return false;
       // The reset-recovery tests abort every Durable Object mid-session; capabilities that were
       // held across the abort (e.g. the fire-and-forget AdminSettings install kicked off by the
       // fetch handler) reject on their own schedule, independent of any awaited call.

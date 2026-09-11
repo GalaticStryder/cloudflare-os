@@ -12,6 +12,7 @@ import type { AdminSettings } from "./admin-settings.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./blueprint-archive.js";
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
+import { sessionMaxAgeMs, newSessionExpiry, sessionExpiry } from "./auth/sessions.js";
 
 const logger = createWorkshopLogger("workshop.user");
 
@@ -80,6 +81,7 @@ export type UserChatContext = {
 type LoginSessionRecord = {
   tokenId: string,  // sha256 hash of token, hex-formatted
   created: Date,
+  expiresAt?: Date,
 }
 
 // Blueprint record stored in the user's `blueprints` collection.
@@ -301,21 +303,35 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.vendors = buildGatekeeperVendorMap(env);
   }
 
-  async authenticate(token: string): Promise<void> {
+  async #sessionTokenId(token: string): Promise<string> {
     let tokenBytes: Uint8Array;
     try {
       tokenBytes = Uint8Array.fromBase64(token);
+      if (tokenBytes.length !== 32 || tokenBytes.toBase64() !== token) {
+        throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
+      }
     } catch {
       // A corrupt (non-Base64) token must classify as an auth failure like any other bad token,
       // not surface as the decoder's SyntaxError.
       throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
     }
     let hash = await crypto.subtle.digest('SHA-256', tokenBytes);
-    let tokenId = new Uint8Array(hash).toHex();
-    let session = this.storage.sessions.get(tokenId);
-    if (!session) {
-      throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
-    }
+    return new Uint8Array(hash).toHex();
+  }
+
+  async authenticate(token: string): Promise<{ tokenId: string; expiresAt: Date }> {
+    const tokenId = await this.#sessionTokenId(token);
+    return { tokenId, expiresAt: await this.getSessionExpiry(tokenId) };
+  }
+
+  async getSessionExpiry(tokenId: string): Promise<Date> {
+    const session = this.storage.sessions.get(tokenId);
+    if (!session) throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
+    return sessionExpiry(session, sessionMaxAgeMs(this.env.AUTH_SESSION_MAX_AGE_SECONDS));
+  }
+
+  async logout(token: string): Promise<void> {
+    this.storage.sessions.delete(await this.#sessionTokenId(token));
   }
 
   /**
@@ -341,12 +357,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return false;
   }
 
-  async #newSessionToken(): Promise<string> {
+  async #newSessionToken(credentialExpiresAt?: Date): Promise<string> {
     let sessionToken = new Uint8Array(32);
     crypto.getRandomValues(sessionToken);
 
     let tokenId = new Uint8Array(await crypto.subtle.digest('SHA-256', sessionToken)).toHex();
-    this.storage.sessions.put({ tokenId, created: new Date() });
+    const created = new Date();
+    const expiresAt = newSessionExpiry(sessionMaxAgeMs(this.env.AUTH_SESSION_MAX_AGE_SECONDS),
+      credentialExpiresAt, created.valueOf());
+    this.storage.sessions.put({ tokenId, created, expiresAt });
 
     return sessionToken.toBase64();
   }
@@ -413,7 +432,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * When the account doesn't yet exist and `allowCreate` is false (deployment signups are closed),
    * returns null instead of creating one — existing users can still sign in.
    */
-  async loginOrCreateViaGatekeeper(email: string, allowCreate: boolean): Promise<string | null> {
+  async loginOrCreateViaGatekeeper(email: string, allowCreate: boolean,
+      credentialExpiresAt?: Date): Promise<string | null> {
+    newSessionExpiry(sessionMaxAgeMs(this.env.AUTH_SESSION_MAX_AGE_SECONDS), credentialExpiresAt);
     if (!this.storage.created.get()) {
       if (!allowCreate) return null;
       this.storage.created.put(true);
@@ -423,7 +444,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         id: email,
       });
     }
-    return this.#newSessionToken();
+    return this.#newSessionToken(credentialExpiresAt);
   }
 
   /** Whether this account has a password set (false for gatekeeper sign-in accounts). */

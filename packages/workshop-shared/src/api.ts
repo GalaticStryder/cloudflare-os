@@ -63,8 +63,26 @@ export interface PublicApi extends RpcTarget {
    */
   startGatekeeperLogin(vendorId: string): Promise<{ url: string; attempt: RpcStub<LoginAttempt> }>;
 
-  /** Authenticates the user using an auth token (typically stored in localStorage). */
+  /**
+   * Authenticates the user using an auth token (typically stored in localStorage).
+   * Native sessions expire after AUTH_SESSION_MAX_AGE_SECONDS (default 3600, integer 60..86400),
+   * capped by any credential expiry supplied by the sign-in gatekeeper. Legacy sessions without
+   * persisted expiry use their original creation time plus the configured maximum.
+   * A connection retains leases for every session used on it (at most 32 distinct sessions); any
+   * expiry or failed recheck closes the whole connection, including derived capabilities.
+   */
   authenticate(token: string): Promise<AuthenticatedApi>;
+
+  /**
+   * Revokes only the native session identified by this exact token; possession is required, not
+   * another authenticated capability. Idempotent for an already removed or unknown well-formed
+   * token. Does not delete user data, revoke other sessions, or log out Cloudflare Access.
+   * New authentication attempts fail after this resolves. Existing connections recheck every
+   * 15 seconds and fail closed after 30 seconds without a successful check (subject to runtime
+   * scheduling); revocation is not instantaneous across connections and does not undo in-flight
+   * operations. Rejection means revocation is unconfirmed, even if local credentials are cleared.
+   */
+  logout(token: string): Promise<void>;
 
   /**
    * Like authenticate() but the server is expected to be sitting behind Cloudflare Access, and the

@@ -26,6 +26,10 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
   // State closures go stale in cleanup functions, so we use a ref.
   const authenticatedApiRef = useRef<RpcStub<AuthenticatedApi> | null>(null)
   authenticatedApiRef.current = authState.authenticatedApi
+  const tokenRef = useRef(authState.token)
+  tokenRef.current = authState.token
+  const authGeneration = useRef(0)
+  const loggingOut = useRef(false)
 
   /**
    * Names the signed-in user on error reports, for as long as this stub is the current one.
@@ -48,14 +52,18 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
     const authenticatedApi = authState.authenticatedApi
     if (!authenticatedApi) return
     let cancelled = false
+    const generation = authGeneration.current
     authenticatedApi.whoami().then((info) => {
       // Only a real user account names a person: for a gadget author `id` is its owner's id.
-      if (!cancelled && info.type === 'user') setReportedUserId(info.id)
+      if (!cancelled && generation === authGeneration.current && info.type === 'user') {
+        setReportedUserId(info.id)
+      }
     }).catch(() => {})
     return () => { cancelled = true }
   }, [authState.authenticatedApi])
 
   useEffect(() => {
+    if (loggingOut.current) return
     if (CF_ACCESS_MODE) {
       authenticateWithCfAccess()
     } else {
@@ -94,6 +102,9 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
   }
 
   const authenticateWithToken = (token: string) => {
+    authGeneration.current++
+    loggingOut.current = false
+    tokenRef.current = token
     setAuthState(prev => {
       // Dispose the previous authenticated API stub if it exists
       if (prev.authenticatedApi) {
@@ -122,13 +133,37 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
     authenticateWithToken(token)
   }
 
-  const logout = () => {
+  const logout = async (): Promise<boolean> => {
+    const generation = ++authGeneration.current
+    loggingOut.current = true
     setReportedUserId(undefined)
 
     if (CF_ACCESS_MODE) {
       window.location.assign('/cdn-cgi/access/logout')
-      return
+      return true
     }
+
+    const token = tokenRef.current ?? localStorage.getItem('authToken')
+    let revoked = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      if (token) {
+        await Promise.race([
+          publicApi.logout(token),
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error('Logout timed out')), 5000)
+          }),
+        ])
+      }
+    } catch {
+      revoked = false
+    } finally {
+      clearTimeout(timer)
+    }
+    if (localStorage.getItem('authToken') === token) localStorage.removeItem('authToken')
+    if (generation !== authGeneration.current) return revoked
+    loggingOut.current = false
+    tokenRef.current = null
 
     // Use functional updater to read current state (avoids stale closure).
     setAuthState(prev => {
@@ -139,11 +174,11 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
         token: null,
         authenticatedApi: null,
         isLoading: false,
-        error: null
+        error: revoked ? null : 'Signed out locally, but server session revocation could not be confirmed. The session may remain usable until it expires.'
       }
     })
 
-    localStorage.removeItem('authToken')
+    return revoked
   }
 
   return {

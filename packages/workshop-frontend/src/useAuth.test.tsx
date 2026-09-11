@@ -30,6 +30,7 @@ function stubPublicApi(author?: AiChatAuthorInfo): RpcStub<PublicApi> {
   return {
     authenticate: () => authenticated,
     authenticateFromCfAccess: () => authenticated,
+    logout: async () => {},
   } as unknown as RpcStub<PublicApi>
 }
 
@@ -52,12 +53,18 @@ function deferredPublicApi(): {
     return { whoami: () => pending, [Symbol.dispose]: () => {} }
   }
   return {
-    api: { authenticate, authenticateFromCfAccess: authenticate } as unknown as RpcStub<PublicApi>,
+    api: { authenticate, authenticateFromCfAccess: authenticate, logout: async () => {} } as unknown as RpcStub<PublicApi>,
     release: (nth, author) => releases[nth](author),
   }
 }
 
-type Controls = { login: (token: string) => void; logout: () => void }
+function deferredCompletion() {
+  let resolve: () => void = () => {}
+  const promise = new Promise<void>((complete) => { resolve = complete })
+  return { promise, resolve }
+}
+
+type Controls = Pick<ReturnType<typeof useAuth>, 'login' | 'logout'>
 
 describe('useAuth error reporting identity', () => {
   const roots: Root[] = []
@@ -71,16 +78,20 @@ describe('useAuth error reporting identity', () => {
     localStorage.clear()
     vi.unstubAllEnvs()
     vi.clearAllMocks()
+    vi.restoreAllMocks()
+    vi.useRealTimers()
   })
 
   /** Mounts an independent `useAuth` instance, returning its login/logout handles. */
   async function mount(
     publicApi: RpcStub<PublicApi>,
     hook: typeof useAuth = useAuth,
-  ): Promise<{ controls: Controls; root: Root }> {
-    const captured: { controls?: Controls } = {}
+  ): Promise<{ controls: Controls; root: Root; getState: () => ReturnType<typeof useAuth> }> {
+    const captured: { controls?: Controls; state?: ReturnType<typeof useAuth> } = {}
     function Consumer() {
-      const { login, logout } = hook(publicApi)
+      const state = hook(publicApi)
+      captured.state = state
+      const { login, logout } = state
       captured.controls = { login, logout }
       return null
     }
@@ -91,7 +102,7 @@ describe('useAuth error reporting identity', () => {
     const root = createRoot(container)
     roots.push(root)
     await act(async () => root.render(<Consumer />))
-    return { controls: captured.controls!, root }
+    return { controls: captured.controls!, root, getState: () => captured.state! }
   }
 
   it('names the user when a stored token authenticates on mount', async () => {
@@ -143,9 +154,75 @@ describe('useAuth error reporting identity', () => {
     localStorage.setItem('authToken', 'stored-token')
     const { controls } = await mount(stubPublicApi(person))
 
-    act(() => controls.logout())
+    await act(async () => { await controls.logout() })
 
     expect(setReportedUserId).toHaveBeenLastCalledWith(undefined)
+  })
+
+  it('requests exact-token revocation before clearing local state', async () => {
+    localStorage.setItem('authToken', 'stored-token')
+    const api = stubPublicApi(person)
+    const pending = deferredCompletion()
+    const revoke = vi.fn(() => pending.promise)
+    Object.assign(api, { logout: revoke })
+    const { controls } = await mount(api)
+    let finished!: Promise<boolean>
+    act(() => { finished = controls.logout() })
+    expect(revoke).toHaveBeenCalledExactlyOnceWith('stored-token')
+    expect(localStorage.getItem('authToken')).toBe('stored-token')
+    await act(async () => {
+      pending.resolve()
+      expect(await finished).toBe(true)
+    })
+    expect(localStorage.getItem('authToken')).toBeNull()
+  })
+
+  it('clears local state but returns failure when revocation is unconfirmed', async () => {
+    localStorage.setItem('authToken', 'stored-token')
+    const api = stubPublicApi(person)
+    Object.assign(api, { logout: async () => { throw new Error('offline') } })
+    const { controls, getState } = await mount(api)
+    await act(async () => { expect(await controls.logout()).toBe(false) })
+    expect(localStorage.getItem('authToken')).toBeNull()
+    expect(getState().error).toContain('revocation could not be confirmed')
+    expect(getState().isAuthenticated).toBe(false)
+  })
+
+  it('bounds a hanging logout request and cleans up its timer', async () => {
+    localStorage.setItem('authToken', 'stored-token')
+    const api = stubPublicApi(person)
+    Object.assign(api, { logout: () => new Promise(() => {}) })
+    const { controls, getState } = await mount(api)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const schedule = vi.spyOn(globalThis, 'setTimeout')
+    const cancel = vi.spyOn(globalThis, 'clearTimeout')
+    let finished!: Promise<boolean>
+    act(() => { finished = controls.logout() })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(await finished).toBe(false)
+    })
+    expect(getState().error).toContain('revocation could not be confirmed')
+    expect(localStorage.getItem('authToken')).toBeNull()
+    const timeoutIndex = schedule.mock.calls.findIndex(([, delay]) => delay === 5000)
+    expect(timeoutIndex).toBeGreaterThanOrEqual(0)
+    expect(cancel).toHaveBeenCalledWith(schedule.mock.results[timeoutIndex].value)
+  })
+
+  it('does not let a pending logout clear a newer login', async () => {
+    localStorage.setItem('authToken', 'stored-token')
+    const api = stubPublicApi(person)
+    const pending = deferredCompletion()
+    Object.assign(api, { logout: () => pending.promise })
+    const { controls } = await mount(api)
+    let finished!: Promise<boolean>
+    act(() => { finished = controls.logout() })
+    await act(async () => {
+      localStorage.setItem('authToken', 'new-token')
+      controls.login('new-token')
+    })
+    await act(async () => { pending.resolve(); await finished })
+    expect(localStorage.getItem('authToken')).toBe('new-token')
   })
 
   it('ignores a lookup that resolves after logout', async () => {
@@ -153,7 +230,7 @@ describe('useAuth error reporting identity', () => {
     const { api, release } = deferredPublicApi()
     const { controls } = await mount(api)
 
-    act(() => controls.logout())
+    await act(async () => { await controls.logout() })
     expect(setReportedUserId).toHaveBeenLastCalledWith(undefined)
 
     // Disposing the stub is not a defence: capnweb does not guarantee that disposal rejects a call
