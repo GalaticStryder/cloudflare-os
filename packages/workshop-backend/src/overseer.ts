@@ -3155,6 +3155,24 @@ class OverseerImpl implements AgentHooks {
     this.#associateAction(caller, actionId);
   }
 
+  // Variant of bindHook() for a gadget registering a callback on itself: the gatekeeper passes
+  // the gadget's [restore]() params instead of a pre-forged stub, and we forge the callback via
+  // the same forger worker that backs `env.<GADGET>[restore]` in executeCode. Only a gadget
+  // caller may use it, and only to forge a stub into itself -- the same authority ctx.restore()
+  // would grant the gadget were its calling context restorable.
+  async bindHookForGadget<Hook extends RpcTarget>(
+      gatekeeperId: number, controller: Fetcher<HookController<Hook>>,
+      restoreParams: unknown, description: HookDescription, caller: GatekeeperCaller)
+      : Promise<void> {
+    if (caller.from !== "gadget") {
+      throw new Error("bindHookForGadget is only available to gadget callers.");
+    }
+    let gadgetId = this.resolveGadgetId(caller.gadgetId);
+    let callback =
+        await this.#forgeGadgetRestoreStub(gadgetId, restoreParams) as NativeRpcStub<Hook>;
+    return this.bindHook(gatekeeperId, controller, callback, description, {...caller, gadgetId});
+  }
+
   // What is the last active time that we know the user DO has been made aware of?
   #lastActiveTimeKnownToUserDo?: Date;
   // What is the last active time we've seen locally?
@@ -6451,22 +6469,7 @@ class OverseerImpl implements AgentHooks {
           `[restore] is only available on Gadget bindings; "${bindingName}" is not a Gadget.`);
     }
     let gadgetId = entry.id;
-
-    // Wacky hack: Load the one-off "forger" worker through `ctx.restore()`, so that it gets
-    // imbued with a self-token encoding its restore params as `{ type: "gadget", gadgetId,
-    // codeId }`. However, as soon as we remove `codeId` from the table, these params will
-    // redirect to point at the gadget instead. Hence, ctx.restore() inside the forger worker
-    // actually creates RpcStubs that point at the gadget's `[restore]()` method. Whoa!
-    let codeId = crypto.randomUUID();
-    let forger: Fetcher<RestoreForgerEntrypoint>;
-    try {
-      this.#codeIdMap.set(codeId, RESTORE_FORGER_WORKER);
-      forger = await this.ctx.restore({type: "gadget", gadgetId, codeId});
-    } finally {
-      this.#codeIdMap.delete(codeId);
-    }
-
-    let stub = await forger.forge(params);
+    let stub = await this.#forgeGadgetRestoreStub(gadgetId, params);
 
     let targets = this.#forgedRestoreTargets.get(chatId);
     if (!targets) {
@@ -6476,6 +6479,25 @@ class OverseerImpl implements AgentHooks {
     targets.add(gadgetId);
 
     return stub;
+  }
+
+  // Forge a persistent stub that restores through the given gadget's [restore](params) method.
+  //
+  // Wacky hack: Load the one-off "forger" worker through `ctx.restore()`, so that it gets
+  // imbued with a self-token encoding its restore params as `{ type: "gadget", gadgetId,
+  // codeId }`. However, as soon as we remove `codeId` from the table, these params will
+  // redirect to point at the gadget instead. Hence, ctx.restore() inside the forger worker
+  // actually creates RpcStubs that point at the gadget's `[restore]()` method. Whoa!
+  async #forgeGadgetRestoreStub(gadgetId: WorkpieceId, params: unknown): Promise<unknown> {
+    let codeId = crypto.randomUUID();
+    let forger: Fetcher<RestoreForgerEntrypoint>;
+    try {
+      this.#codeIdMap.set(codeId, RESTORE_FORGER_WORKER);
+      forger = await this.ctx.restore({type: "gadget", gadgetId, codeId});
+    } finally {
+      this.#codeIdMap.delete(codeId);
+    }
+    return forger.forge(params);
   }
 
   // If exactly one gadget has had a restore stub forged in the chat's current executeCode
@@ -9710,6 +9732,13 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
         controller: Fetcher<HookController<Hook>>, callback: NativeRpcStub<Hook>,
         description: HookDescription): Promise<void> {
     return this.impl.bindHook(this.gatekeeperId, controller, callback, description, this.caller);
+  }
+
+  bindHookForGadget<Hook extends RpcTarget>(
+        controller: Fetcher<HookController<Hook>>, restoreParams: unknown,
+        description: HookDescription): Promise<void> {
+    return this.impl.bindHookForGadget(
+        this.gatekeeperId, controller, restoreParams, description, this.caller);
   }
 }
 

@@ -1044,6 +1044,25 @@ export interface ApprovalQueue extends ObservationAuthorizer {
   bindHook<Hook extends RpcTarget>(
         controller: Fetcher<HookController<Hook>>, callback: RpcStub<Hook>,
         description: HookDescription): Promise<void>;
+
+  /**
+   * Variant of `bindHook()` for a Gadget registering a persistent callback on itself.
+   *
+   * Instead of receiving an already-forged `callback` stub, the gatekeeper passes
+   * `restoreParams` and the overseer forges a persistent stub that restores through the calling
+   * gadget's `[restore](restoreParams)` method -- exactly the stub the gadget would have
+   * produced with `ctx.restore(restoreParams)` had its own calling context been restorable.
+   * `ctx.restore()` is unavailable while a Gadget is invoked by a non-restorable caller (e.g.
+   * its client UI), which is precisely when a UI-initiated registration needs it; agents can
+   * already forge such stubs via `env.<GADGET>[restore]` inside `executeCode`, and this method
+   * conveys the same authority to the gadget itself.
+   *
+   * The forged callback always targets the *calling* gadget; a gadget cannot use this to forge
+   * stubs into another gadget. Calls from non-gadget callers are rejected.
+   */
+  bindHookForGadget<Hook extends RpcTarget>(
+        controller: Fetcher<HookController<Hook>>, restoreParams: unknown,
+        description: HookDescription): Promise<void>;
 }
 
 export type ObservationDescription = {
