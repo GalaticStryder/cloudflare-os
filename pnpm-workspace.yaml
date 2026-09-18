@@ -44,8 +44,12 @@ minimumReleaseAgeExclude:
 
 allowBuilds:
   '@google/genai': true
+  '@reown/appkit': true
+  bufferutil: true
   core-js-pure: true
   esbuild: true
+  keccak: true
   protobufjs: true
   sharp: true
+  utf-8-validate: true
   workerd: true

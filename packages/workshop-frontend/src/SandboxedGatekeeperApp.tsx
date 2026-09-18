@@ -23,6 +23,12 @@ import {
 // is full-viewport.
 type OverlayRect = { left: number; top: number; width: number; height: number }
 
+// A same-origin gatekeeper path an app may ask the host to open as a popup: relative,
+// /gatekeeper/<vendor>/…, URL-safe characters only. Anything else (absolute URLs,
+// protocol-relative, other origins) is rejected so an untrusted app can never navigate
+// the user off-site.
+const GATEKEEPER_URL_PATTERN = /^\/gatekeeper\/[a-z0-9][a-z0-9-]*\/[A-Za-z0-9\-._~!$&'()*+,;=:@/?#]{1,480}$/
+
 // The host's reply to a present/dismiss. On open, `rect` is where the app holds its page fixed while
 // the iframe expands to full-viewport (null on restore); `willResize` is whether switching the iframe
 // to/from full-viewport actually changes its pixel size (it won't if the pane already fills the window).
@@ -136,6 +142,21 @@ class GatekeeperAppHostImpl extends RpcTarget {
 
   openPrompt(prompt: string): void {
     this.#openPrompt(normalizeGatekeeperAppPrompt(prompt))
+  }
+
+  /**
+   * Opens a same-origin gatekeeper sign page (e.g. the wallet's agent-approval flow)
+   * as a popup. The sandboxed app cannot open popups itself, and wallet extensions
+   * need a real-origin window to sign, so the app asks the host to open its own
+   * gatekeeper path. The path is strictly validated — anything outside
+   * /gatekeeper/<vendor>/… throws, so an untrusted app can never navigate elsewhere.
+   */
+  openGatekeeperUrl(path: string): boolean {
+    if (typeof path !== 'string' || !GATEKEEPER_URL_PATTERN.test(path)) {
+      throw new TypeError('Invalid gatekeeper URL.')
+    }
+    window.open(path, 'gatekeeper-flow', 'popup,width=420,height=680')
+    return true
   }
 
   // The app calls this once to learn the current theme and register a receiver for later changes.

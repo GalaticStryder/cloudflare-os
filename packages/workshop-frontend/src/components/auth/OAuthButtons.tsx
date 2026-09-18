@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { RpcStub } from 'capnweb'
-import { PublicApi, AuthVendorInfo } from '@gadgets/workshop-shared/api'
-import { Button, Banner } from '@cloudflare/kumo'
+import { PublicApi, AuthVendorInfo, LoginAttempt } from '@gadgets/workshop-shared/api'
+import { Button, Banner, Loader } from '@cloudflare/kumo'
+import PrivySignInFlow, { usePrivySignInConfig } from './PrivySignIn'
 
 interface OAuthButtonsProps {
   rpcStub: RpcStub<PublicApi>
@@ -10,13 +11,22 @@ interface OAuthButtonsProps {
 }
 
 /**
- * Renders a sign-in button per auth-capable gatekeeper vendor. Clicking opens the gatekeeper's
- * OAuth popup (which self-closes) and waits for the result over RPC; on success the session token is
- * stored and the app re-authenticates.
+ * Renders a sign-in button per auth-capable gatekeeper vendor.
+ *
+ * The Privy-backed vendor signs in *within this page* (see PrivySignIn.tsx): the
+ * wallet's native prompts work everywhere, including mobile in-app wallet browsers
+ * that block `window.open`. Other gatekeepers open their OAuth popup (which
+ * self-closes); on success the session token is stored and the app re-authenticates.
  */
 export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButtonsProps) {
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState<string | null>(null)
+  const [privyFlow, setPrivyFlow] = useState<{ url: string; attempt: RpcStub<LoginAttempt> } | null>(null)
+
+  // Load the Privy config eagerly (when a Privy-backed vendor is offered) so the
+  // in-page sign-in can start without delay once triggered.
+  const privyOffered = vendors.some(vendor => vendor.vendorId === 'privy')
+  const { config: privyConfig, unavailable: privyUnavailable } = usePrivySignInConfig(privyOffered)
 
   // Track the pop-up-poll interval, the in-flight login RPC, and mounted state so we can stop a
   // sign-in attempt that's still running if the component unmounts (e.g. the user navigates away
@@ -46,11 +56,40 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
 
   if (vendors.length === 0) return null
 
+  const complete = (token: string) => {
+    localStorage.setItem('authToken', token)
+    if (onSuccess) onSuccess()
+    else window.location.reload()
+  }
+
+  const failPrivy = (message: string) => {
+    if (privyFlow) {
+      try { privyFlow.attempt[Symbol.dispose]() } catch { /* already settled */ }
+    }
+    loginRpcRef.current = null
+    setPrivyFlow(null)
+    setPending(null)
+    setError(message)
+  }
+
   const start = async (vendorId: string) => {
     setError(null)
     setPending(vendorId)
     try {
       const { url, attempt } = await rpcStub.startGatekeeperLogin(vendorId)
+      // The Privy gatekeeper signs in within this page — mobile in-app wallet
+      // browsers block popups, and the wallet's own prompts work everywhere.
+      if (url.includes('/gatekeeper/privy/login/')) {
+        if (!privyConfig) {
+          try { attempt[Symbol.dispose]() } catch { /* already disposed */ }
+          throw new Error(privyUnavailable
+            ? 'Wallet sign-in is unavailable on this deployment.'
+            : 'Wallet sign-in is still initializing. Try again in a moment.')
+        }
+        loginRpcRef.current = attempt as unknown as Disposable
+        setPrivyFlow({ url, attempt })
+        return
+      }
       // `attempt` is the capability to receive the session token; track it so we can dispose it
       // (cancelling the wait server-side) if the component unmounts mid-login.
       loginRpcRef.current = attempt as unknown as Disposable
@@ -83,9 +122,7 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           .catch(e => finish(() => reject(e instanceof Error ? e : new Error('Could not sign in'))))
       })
       if (!mountedRef.current) return  // user navigated away mid-flow; drop the result
-      localStorage.setItem('authToken', token)
-      if (onSuccess) onSuccess()
-      else window.location.reload()
+      complete(token)
     } catch (err) {
       if (!mountedRef.current) return
       setError(err instanceof Error ? err.message : 'Could not sign in')
@@ -96,26 +133,43 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
   return (
     <div className="space-y-3">
       {error && <Banner variant="error" title={error} />}
-      {vendors.map((vendor) => (
-        <Button
-          key={vendor.vendorId}
-          variant="secondary"
-          onClick={() => start(vendor.vendorId)}
-          loading={pending === vendor.vendorId}
-          disabled={pending !== null}
-          className="w-full justify-center"
-        >
-          {vendor.logo && (
-            <img
-              src={vendor.logo.url}
-              alt=""
-              className="mr-1"
-              style={{ height: 18, width: 'auto' }}
-            />
-          )}
-          Continue with {vendor.displayName}
-        </Button>
-      ))}
+      {privyFlow ? (
+        privyConfig ? (
+          <PrivySignInFlow
+            config={privyConfig}
+            url={privyFlow.url}
+            attempt={privyFlow.attempt}
+            onDone={token => { if (mountedRef.current) complete(token) }}
+            onFail={failPrivy}
+          />
+        ) : (
+          <div className="flex flex-col items-center gap-2 py-4">
+            <Loader size="sm" />
+            <p className="text-sm text-kumo-subtle">Preparing wallet sign-in…</p>
+          </div>
+        )
+      ) : (
+        vendors.map((vendor) => (
+          <Button
+            key={vendor.vendorId}
+            variant="secondary"
+            onClick={() => start(vendor.vendorId)}
+            loading={pending === vendor.vendorId}
+            disabled={pending !== null}
+            className="w-full justify-center"
+          >
+            {vendor.logo && (
+              <img
+                src={vendor.logo.url}
+                alt=""
+                className="mr-1"
+                style={{ height: 18, width: 'auto' }}
+              />
+            )}
+            Continue with {vendor.displayName}
+          </Button>
+        ))
+      )}
     </div>
   )
 }

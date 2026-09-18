@@ -1,7 +1,5 @@
 // Vitest runs under node, but the src/ tsconfig only has browser types — hence the suppressions.
-// @ts-expect-error node builtin without @types/node
 import { readFileSync } from 'node:fs'
-// @ts-expect-error node builtin without @types/node
 import { createRequire } from 'node:module'
 import { describe, expect, it, vi } from 'vitest'
 import { deserialize, serialize } from 'capnweb'
