@@ -4,8 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-    <!-- Prevents Gadget UI frames from navigating away from their srcdoc. DO NOT REMOVE. -->
-    <meta http-equiv="Content-Security-Policy" content="frame-src srcdoc:;">
+    <!-- Keeps untrusted Gadget/gatekeeper UI frames confined to srcdoc (see the per-iframe
+         csp attributes in GadgetUI/SandboxedGatekeeperApp/SandboxedResourceConfigurator),
+         while allowing the Privy sign-in flow's own frames ('self' + auth.privy.io).
+         DO NOT REMOVE. -->
+    <meta http-equiv="Content-Security-Policy" content="frame-src srcdoc: 'self' https://auth.privy.io;">
 
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Cloudflare OS</title>

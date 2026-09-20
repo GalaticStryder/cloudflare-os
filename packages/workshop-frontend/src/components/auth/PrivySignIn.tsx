@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { PrivyProvider, getIdentityToken, useLogin, useLoginWithSiwe, usePrivy } from '@privy-io/react-auth'
+import { keccak_256 } from '@noble/hashes/sha3'
 import type { RpcStub } from 'capnweb'
 import type { LoginAttempt } from '@gadgets/workshop-shared/api'
 import { Button, Loader } from '@cloudflare/kumo'
@@ -88,13 +89,45 @@ function toHex(text: string): string {
   return '0x' + Array.from(new TextEncoder().encode(text)).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
+/**
+ * EIP-55 checksum encoding. Privy's SIWE validation enforces checksummed
+ * addresses (per EIP-4361), but some wallets — notably MetaMask Mobile's
+ * in-app browser — return lowercase addresses from eth_requestAccounts; a
+ * lowercase address in the message gets the signature rejected with
+ * "Invalid SIWE message and/or signature".
+ */
+function toChecksumAddress(address: string): string {
+  const lower = address.toLowerCase()
+  if (!/^0x[0-9a-f]{40}$/.test(lower)) return address
+  const hashHex = Array.from(keccak_256(new TextEncoder().encode(lower.slice(2))))
+    .map(b => b.toString(16).padStart(2, '0')).join('')
+  let result = '0x'
+  for (let i = 0; i < 40; i++) {
+    result += parseInt(hashHex[i], 16) >= 8 ? lower[2 + i].toUpperCase() : lower[2 + i]
+  }
+  return result
+}
+
+/** Detects the injected wallet's client type, recorded on the wallet link (the identity token carries it). */
+function detectWalletClientType(): string {
+  const eth = (window as { ethereum?: Record<string, unknown> }).ethereum
+  if (!eth) return 'unknown'
+  if (eth.isMetaMask === true) return 'metamask'
+  if (eth.isCoinbaseWallet === true) return 'coinbase_wallet'
+  if (eth.isRabby === true) return 'rabby'
+  if (eth.isPhantom === true) return 'phantom'
+  if (eth.isBraveWallet === true) return 'brave'
+  if (eth.isTrust === true || eth.isTrustWallet === true) return 'trust'
+  return 'unknown'
+}
+
 function SignInInner({ url, attempt, onDone, onFail }: {
   url: string
   attempt: RpcStub<LoginAttempt>
   onDone: (token: string) => void
   onFail: (message: string) => void
 }) {
-  const { ready, authenticated, getAccessToken } = usePrivy()
+  const { ready, authenticated, getAccessToken, logout: privyLogout } = usePrivy()
   const { login } = useLogin({ onError: () => onFail('Wallet sign-in was cancelled or failed. Try again.') })
   const { generateSiweMessage, loginWithSiwe } = useLoginWithSiwe()
   const [phase, setPhase] = useState<'wallet' | 'verifying'>('wallet')
@@ -113,6 +146,29 @@ function SignInInner({ url, attempt, onDone, onFail }: {
   useEffect(() => { tokenPromise.catch(() => undefined) }, [tokenPromise])
 
   /**
+   * Purges any Privy session cached from a previous login before this flow starts,
+   * so signing in always requires a fresh wallet signature. Without this, Privy
+   * restores `authenticated: true` from its stored session and the flow below
+   * would complete without the user signing anything.
+   */
+  const purged = useRef(false)
+  useEffect(() => {
+    if (!ready || purged.current) return
+    if (!authenticated) return
+    purged.current = true
+    privyLogout().catch(() => onFail('Could not clear the previous wallet session. Refresh the page and sign in again.'))
+  }, [ready, authenticated])
+
+  // Auto-start the sign-in once the SDK is ready and no cached session remains.
+  useEffect(() => {
+    if (!ready || loginStarted.current || authenticated) return
+    loginStarted.current = true
+    if (hasInjectedWallet()) void loginDirect()
+    else login({ loginMethods: ['wallet'], walletChainType: 'ethereum-only' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, authenticated])
+
+  /**
    * Direct SIWE sign-in through the injected wallet — no modal, no popups. This is
    * the path that works inside mobile in-app wallet browsers, which restrict both.
    * The wallet's own native prompts handle the account request and signature.
@@ -123,13 +179,17 @@ function SignInInner({ url, attempt, onDone, onFail }: {
       if (!ethereum) throw new Error('No injected wallet detected.')
       const accounts = await ethereum.request({ method: 'eth_requestAccounts' }) as string[]
       if (!Array.isArray(accounts) || accounts.length === 0) throw new Error('Wallet connection was rejected.')
-      const address = accounts[0]
+      // Some wallets (MetaMask Mobile's in-app browser) return a lowercase address;
+      // the SIWE message must carry the EIP-55 checksummed form or Privy rejects it.
+      const address = toChecksumAddress(accounts[0])
       const chainIdHex = await ethereum.request({ method: 'eth_chainId' }) as string
       const chainId = `eip155:${parseInt(chainIdHex, 16)}` as `eip155:${number}`
       const siweMessage = await generateSiweMessage({ address, chainId })
       const signature = await ethereum.request({ method: 'personal_sign', params: [toHex(siweMessage), address] }) as string
       if (typeof signature !== 'string' || !signature) throw new Error('The signature was rejected.')
-      await loginWithSiwe({ signature, message: siweMessage })
+      // walletClientType/connectorType are recorded on the wallet link; the owner-auth
+      // verification requires wallet_client_type on the identity token's wallet entry.
+      await loginWithSiwe({ signature, message: siweMessage, walletClientType: detectWalletClientType(), connectorType: 'injected' })
     } catch (error) {
       // Fall back to the wallet-picker modal rather than failing the whole flow.
       setDirectError(error instanceof Error ? error.message : 'Direct wallet sign-in failed.')
@@ -137,20 +197,10 @@ function SignInInner({ url, attempt, onDone, onFail }: {
     }
   }
 
-  // Auto-start the sign-in once the SDK is ready: direct SIWE when a wallet is
-  // injected (mobile in-app browsers, desktop extensions), the Privy modal otherwise.
+  // Once Privy is authenticated — by the signature from THIS flow, never a cached
+  // session — submit the tokens to the gatekeeper flow and take the session token.
   useEffect(() => {
-    if (!ready || loginStarted.current) return
-    loginStarted.current = true
-    if (hasInjectedWallet()) void loginDirect()
-    else login({ loginMethods: ['wallet'], walletChainType: 'ethereum-only' })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready])
-
-  // Once Privy is authenticated, submit the tokens to the gatekeeper flow and take
-  // the resulting session token.
-  useEffect(() => {
-    if (!ready || !authenticated || submitted.current) return
+    if (!ready || !authenticated || submitted.current || !loginStarted.current) return
     if (!flowId || !flowNonce) {
       onFail('The sign-in link was malformed. Start again.')
       return

@@ -500,6 +500,10 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           border: 'none'
         }}
         sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+        // Confine the untrusted Gadget UI's own nested frames to srcdoc, preserving
+        // the page-wide policy this iframe enjoyed before the Privy login frames
+        // were allowed.
+        {...({ csp: "frame-src srcdoc:;" } as Record<string, string>)}
         title="Gadget UI"
       />
     </div>

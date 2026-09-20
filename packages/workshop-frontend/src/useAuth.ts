@@ -161,6 +161,11 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
       clearTimeout(timer)
     }
     if (localStorage.getItem('authToken') === token) localStorage.removeItem('authToken')
+    // Purge any cached Privy session so the next sign-in requires a fresh wallet
+    // signature rather than restoring the previous session from storage.
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith('privy')) localStorage.removeItem(key)
+    }
     if (generation !== authGeneration.current) return revoked
     loggingOut.current = false
     tokenRef.current = null

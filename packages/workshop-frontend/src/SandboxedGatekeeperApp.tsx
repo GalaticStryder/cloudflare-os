@@ -386,6 +386,9 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
       // allow-same-origin (the frame stays an opaque origin), and the app's CSP keeps connect-src 'none'.
       sandbox="allow-scripts allow-modals"
       allow="clipboard-write"
+      // Confine the untrusted app's own nested frames to srcdoc, preserving the
+      // page-wide policy this iframe enjoyed before the Privy login frames were allowed.
+      {...({ csp: "frame-src srcdoc:;" } as Record<string, string>)}
       title="Gatekeeper app"
       style={iframeStyleForOverlay(overlay)}
     />

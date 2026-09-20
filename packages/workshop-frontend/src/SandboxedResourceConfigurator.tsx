@@ -391,6 +391,10 @@ export default function SandboxedResourceConfigurator({
         srcDoc={frame.iframeHtml}
         onLoad={handleIframeLoad}
         sandbox="allow-scripts"
+        // Confine the untrusted configurator's own nested frames to srcdoc,
+        // preserving the page-wide policy this iframe enjoyed before the Privy
+        // login frames were allowed.
+        {...({ csp: "frame-src srcdoc:;" } as Record<string, string>)}
         title="Resource configurator"
         scrolling="no"
         style={{

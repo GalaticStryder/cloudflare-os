@@ -13,6 +13,7 @@
     "@gadgets/error-reporting": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "@monaco-editor/react": "^4.7.0",
+    "@noble/hashes": "^1.7.1",
     "@phosphor-icons/react": "^2.1.10",
     "@privy-io/react-auth": "3.39.0",
     "@tailwindcss/vite": "^4.3.3",
