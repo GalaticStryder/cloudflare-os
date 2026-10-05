@@ -1,0 +1,15 @@
+// Type-checks the workerd tests, which need `cloudflare:test` and `cloudflare:workers` types.
+// The `cloudflare:test` ambient module is declared by `@cloudflare/vitest-pool-workers`, which
+// TypeScript resolves automatically with `moduleResolution: "bundler"`. Separate from
+// `tsconfig.json` (production) and `tsconfig.test.json` (Node tests) so each environment's types
+// stay self-contained. The test-only `__tests__/env.d.ts` augments `Cloudflare.Env` with the
+// SENPI_ACCOUNT, TEST_HOOKS, and TOGGLEABLE_GATEKEEPER bindings from `vitest.worker.config.ts`;
+// production `src/env.d.ts` is still included for `GlobalProps` and the `*.txt` module declaration.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["./worker-configuration.d.ts", "@cloudflare/vitest-pool-workers/types"]
+  },
+  "include": ["src", "__tests__/env.d.ts", "__tests__/worker.ts", "__tests__/workerd"],
+  "exclude": ["dist", "node_modules", "__tests__/senpi.test.ts", "__tests__/parsers.test.ts", "__tests__/stubs"]
+}

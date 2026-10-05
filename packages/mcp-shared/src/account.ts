@@ -18,6 +18,7 @@ import type { GatekeeperConnectCallback, GatekeeperUser }
 import {
   auth,
   refreshAuthorization,
+  type OAuthClientMetadata,
   type OAuthClientProvider,
   type OAuthDiscoveryState,
   type StoredOAuthClientInformation,
@@ -135,6 +136,10 @@ export type AccountEnv = ConnectionEnv & {
 // single-line, and stripped of the markdown that would let it forge structure there.
 const MAX_SERVER_NAME = 60;
 
+function matchesIssuer(value: { issuer?: string } | undefined, issuer?: string): boolean {
+  return value !== undefined && (!issuer || !value.issuer || value.issuer === issuer);
+}
+
 function displayName(reported: string | undefined): string | undefined {
   if (!reported) return undefined;
   const cleaned = reported.replace(/[\r\n]+/g, " ").replace(/[`*_[\]()#>|]/g, "").trim();
@@ -183,6 +188,47 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
   /** Relaxes host and scheme checks for local development against an MCP server on localhost. */
   protected fetchOptions(): FetchOptions {
     return fetchOptions(this.env);
+  }
+
+  /**
+   * When the authorization server advertises `client_id_metadata_document_supported`, the SDK uses
+   * this URL as the client id rather than registering dynamically. A connector whose AS supports
+   * URL-based client ids overrides this to return a publicly fetchable metadata document URL;
+   * returning undefined (the default) keeps the ordinary DCR flow.
+   */
+  protected oauthClientMetadataUrl(): string | undefined {
+    return undefined;
+  }
+
+  /**
+   * OAuth scopes requested during authorization. A connector that needs specific scopes overrides
+   * this; returning undefined (the default) lets the SDK select scopes from the resource metadata
+   * or the client metadata's own `scope` field.
+   */
+  protected oauthScopes(): string | undefined {
+    return undefined;
+  }
+
+  /**
+   * The single authorization server this connector accepts tokens from. A connector with a fixed
+   * upstream AS overrides this to return its issuer URL; the OAuth provider then rejects any
+   * discovered `authorizationServerUrl` that does not match, and refuses a redirect to a different
+   * origin. Returning undefined (the default) preserves the existing behavior of accepting whatever
+   * the resource metadata points at.
+   */
+  protected oauthAuthorizationServer(): string | undefined {
+    return undefined;
+  }
+
+  /**
+   * The OAuth client metadata document, served by this connector at a public URL. A connector
+   * that uses a URL-based client id (per `oauthClientMetadataUrl`) overrides this to share the
+   * exact metadata between the OAuth provider and the HTTP handler that serves it publicly, so
+   * the two cannot drift. Returning undefined (the default) uses the standard `clientMetadata`
+   * fields built from `clientName` and `baseUrl`.
+   */
+  protected oauthClientMetadata(): OAuthClientMetadata | undefined {
+    return undefined;
   }
 
 
@@ -416,17 +462,25 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         throw new Error("This authorization attempt was replaced by a newer connection.");
       }
     };
-    const matchesIssuer = (value: { issuer?: string } | undefined, issuer?: string) =>
-      value !== undefined && (!issuer || !value.issuer || value.issuer === issuer);
+    const expectedAs = this.oauthAuthorizationServer();
+    const checkIssuer = (url: string) => {
+      if (expectedAs && new URL(url).origin !== new URL(expectedAs).origin) {
+        throw new Error(
+          `The authorization server redirected to ${new URL(url).origin}, which is not the ` +
+          `expected authorization server.`);
+      }
+    };
 
     return {
       redirectUrl: `${this.baseUrl()}/oauth`,
-      clientMetadata: {
+      clientMetadataUrl: this.oauthClientMetadataUrl(),
+      clientMetadata: this.oauthClientMetadata() ?? {
         client_name: clientName(this.env),
         redirect_uris: [`${this.baseUrl()}/oauth`],
-        grant_types: ["authorization_code", "refresh_token"],
-        response_types: ["code"],
-        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"] as const,
+        response_types: ["code"] as const,
+        token_endpoint_auth_method: "none" as const,
+        ...(this.oauthScopes() ? { scope: this.oauthScopes() } : {}),
       },
       clientInformation: context => {
         current();
@@ -465,6 +519,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
       },
       redirectToAuthorization: url => {
         current();
+        checkIssuer(url.origin);
         redirect(url);
       },
       saveCodeVerifier: verifier => {
@@ -495,10 +550,19 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
           this.ctx.storage.kv.delete("oauthDiscovery");
           return undefined;
         }
+        if (state && expectedAs && state.authorizationServerUrl !== expectedAs) {
+          this.ctx.storage.kv.delete("oauthDiscovery");
+          return undefined;
+        }
         return state;
       },
       saveDiscoveryState: state => {
         current();
+        if (expectedAs && state.authorizationServerUrl !== expectedAs) {
+          throw new Error(
+            `The resource metadata points to ${state.authorizationServerUrl}, which is not the ` +
+            `expected authorization server.`);
+        }
         this.ctx.storage.kv.put("oauthDiscovery", state);
       },
       invalidateCredentials: scope => {
@@ -524,6 +588,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         result = await auth(this.oauthProvider(server, generation, url => { redirectUrl = url; }), {
           serverUrl: server.endpoint,
           resourceMetadataUrl: resourceMetadataUrl ? new URL(resourceMetadataUrl) : undefined,
+          scope: this.oauthScopes(),
           fetchFn: sdkFetch(this.fetchOptions()),
         });
       } catch (err) {
@@ -588,6 +653,7 @@ export abstract class McpAccountBase<E extends AccountEnv, P = unknown>
         serverUrl: server.endpoint,
         authorizationCode: code,
         iss: issuer,
+        scope: this.oauthScopes(),
         fetchFn: sdkFetch(this.fetchOptions()),
       });
     } catch (err) {

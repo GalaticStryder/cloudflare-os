@@ -30,6 +30,13 @@ export type WithClientOptions = {
   retryOnExpiry?: boolean;
   /** Absolute deadline shared with time spent waiting for a discovery slot. */
   deadline?: number;
+  /**
+   * When set, every request and redirect must land on one of these exact origins. Merged into the
+   * `McpClient` options alongside the env defaults, so a connector with a fixed upstream can
+   * restrict tool transport to its own origins. Undefined preserves the existing behavior.
+   */
+  allowedOrigins?: readonly string[];
+  expectedGeneration?: number;
 };
 
 /**
@@ -100,6 +107,9 @@ export async function withClient<T>(
     throw notDispatched(err);
   }
   const { authorization, sessionId, generation } = connection;
+  if (options.expectedGeneration !== undefined && generation !== options.expectedGeneration) {
+    throw new McpCallNotDispatchedError("This operation belongs to a previous connection.");
+  }
   const client = new McpClient(
     endpoint, async method => {
       if (method === "tools/call") {
@@ -108,6 +118,7 @@ export async function withClient<T>(
       return authorization;
     }, sessionId, {
       ...fetchOptions(env),
+      ...(options.allowedOrigins ? { allowedOrigins: options.allowedOrigins } : {}),
       deadline: options.deadline,
     });
   let persistedSessionId = sessionId;

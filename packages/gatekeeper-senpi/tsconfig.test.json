@@ -1,0 +1,11 @@
+// Type-checks the Node tests too. Separate from `tsconfig.json` so the Worker's own check stays free of
+// test files and Node types. Excludes the workerd tests, which need `cloudflare:test` types from the
+// vitest-pool-workers config.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["./worker-configuration.d.ts", "node"]
+  },
+  "include": ["src", "__tests__"],
+  "exclude": ["__tests__/workerd", "__tests__/worker.ts", "__tests__/env.d.ts"]
+}

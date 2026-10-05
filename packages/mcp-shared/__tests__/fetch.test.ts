@@ -180,6 +180,52 @@ describe("isAllowedUrl", () => {
   it("relaxes both for local development", () => {
     expect(isAllowedUrl("http://localhost:8080/mcp", { allowInsecure: true })).toBe(true);
   });
+
+  it("rejects credentials in the URL even without allowedOrigins", () => {
+    // Credentials in the URL are always rejected, regardless of other options.
+    expect(isAllowedUrl("https://user:pass@mcp.example.com/mcp")).toBe(false);
+    expect(isAllowedUrl("https://user:pass@mcp.example.com/mcp", { allowInsecure: true })).toBe(false);
+    expect(isAllowedUrl("https://user:pass@mcp.example.com/mcp", {
+      allowedOrigins: ["https://mcp.example.com"],
+    })).toBe(false);
+  });
+
+  it("enforces allowedOrigins before allowInsecure", () => {
+    // allowedOrigins is checked BEFORE allowInsecure, so allowInsecure cannot bypass it.
+    expect(isAllowedUrl("https://mcp.example.com/mcp", {
+      allowedOrigins: ["https://mcp.example.com"],
+    })).toBe(true);
+    expect(isAllowedUrl("https://other.example.com/mcp", {
+      allowedOrigins: ["https://mcp.example.com"],
+      allowInsecure: true,
+    })).toBe(false);
+    expect(isAllowedUrl("http://mcp.example.com/mcp", {
+      allowedOrigins: ["https://mcp.example.com"],
+      allowInsecure: true,
+    })).toBe(false);
+  });
+
+  it("rejects a cross-origin redirect even when allowedOrigins is set", async () => {
+    const hops = stubChain({
+      "https://mcp.example.com/mcp": "https://evil.example.com/mcp",
+    });
+    const response = await guardedFetch("https://mcp.example.com/mcp", {}, {
+      allowedOrigins: ["https://mcp.example.com"],
+    });
+    expect(response.status).toBe(307);
+    expect(hops).toHaveLength(1);
+  });
+
+  it("follows a same-origin redirect when allowedOrigins is set", async () => {
+    const hops = stubChain({
+      "https://mcp.example.com/mcp": "https://mcp.example.com/v2/mcp",
+    });
+    const response = await guardedFetch("https://mcp.example.com/mcp", {}, {
+      allowedOrigins: ["https://mcp.example.com"],
+    });
+    expect(response.status).toBe(200);
+    expect(hops).toHaveLength(2);
+  });
 });
 
 describe("sdkFetch", () => {

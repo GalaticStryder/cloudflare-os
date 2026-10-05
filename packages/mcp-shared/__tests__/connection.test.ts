@@ -235,3 +235,23 @@ it("gives a retried listing a fresh discovery budget after session recovery", as
   expect(initialPages).toBe(50);
   expect(retryPages).toBe(2);
 });
+
+it("rejects before fetch when expectedGeneration does not match", async () => {
+  let fetchCalls = 0;
+  vi.stubGlobal("fetch", async () => { fetchCalls++; return new Response("{}"); });
+  const account: ConnectionAccount = {
+    async getConnection() {
+      return { authorization: "token", sessionId: "session", generation: 2 };
+    },
+    async assertConnectionCurrent() {},
+    async setMcpSessionId() { return true; },
+    async noteCredentialsExpired() {},
+  };
+
+  const error = await withClient({}, account, "https://mcp.example.com",
+    client => client.callTool("send", {}),
+    { expectedGeneration: 1 }).catch(err => err);
+
+  expect(error).toBeInstanceOf(McpCallNotDispatchedError);
+  expect(fetchCalls).toBe(0);
+});

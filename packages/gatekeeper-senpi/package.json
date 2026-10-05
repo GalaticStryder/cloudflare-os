@@ -1,0 +1,27 @@
+{
+  "name": "@gadgets/senpi-gatekeeper",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/senpi.ts",
+  "scripts": {
+    "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
+    "deploy": "wrangler deploy",
+    "clean": "rm -rf dist src/generated",
+    "test:run": "vitest run && vitest run --config vitest.worker.config.ts",
+    "types:check": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p tsconfig.worker-test.json",
+    "build": "pnpm exec tsc --noEmit && pnpm exec tsc --noEmit -p tsconfig.test.json && pnpm exec tsc --noEmit -p tsconfig.worker-test.json && pnpm exec capnweb-validate build --out .wrangler/validate"
+  },
+  "dependencies": {
+    "@gadgets/backend-utils": "workspace:*",
+    "@gadgets/mcp-shared": "workspace:*",
+    "@gadgets/workshop-shared": "workspace:*",
+    "capnweb": "catalog:",
+    "capnweb-validate": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}

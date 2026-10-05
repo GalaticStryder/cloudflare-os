@@ -25,6 +25,12 @@ export type FetchOptions = {
   timeoutMs?: number;
   /** Absolute deadline shared by every request in a multi-page or retried operation. */
   deadline?: number;
+  /**
+   * When set, every request and redirect must land on one of these exact origins. Checked before
+   * `allowInsecure`, so a fixed-origin policy cannot be disabled. A URL carrying credentials
+   * (`user:pass@`) is rejected outright. Undefined preserves the existing behavior.
+   */
+  allowedOrigins?: readonly string[];
 };
 
 /** The one environment variable this package reads. Each Worker's own `Env` satisfies it structurally. */
@@ -127,6 +133,10 @@ export function isAllowedUrl(url: string, options: FetchOptions = {}): boolean {
     parsed = new URL(url);
   } catch {
     return false;
+  }
+  if (parsed.username || parsed.password) return false;
+  if (options.allowedOrigins) {
+    if (!options.allowedOrigins.includes(parsed.origin)) return false;
   }
   if (options.allowInsecure) return true;
   if (parsed.protocol !== "https:") return false;
